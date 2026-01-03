@@ -1,26 +1,56 @@
-from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QLineEdit, QPushButton, QLabel
+from PyQt5.QtWidgets import (
+    QGroupBox, QLabel, QVBoxLayout, QHBoxLayout,
+    QPushButton, QSpinBox
+)
 
 
 class TargetPanel(QGroupBox):
     def __init__(self, controller):
-        super().__init__("Target Volume Control")
+        super().__init__("Target Control (OCR(TRT) + Motor)")
+
         self.controller = controller
 
-        self.input_target = QLineEdit()
-        self.input_target.setPlaceholderText("Target volume (uL)")
+        self.target_spin = QSpinBox()
+        self.target_spin.setRange(0, 9999)
+        self.target_spin.setValue(0)
 
-        self.btn_move = QPushButton("Move to Target")
-        self.btn_move.clicked.connect(self.move_to_target)
+        self.btn_read = QPushButton("Read Current Volume (OCR)")
+        self.btn_start = QPushButton("Run To Target")
+        self.btn_stop = QPushButton("Stop Run")
+
+        self.status = QLabel("Status: Idle")
+        self.status.setWordWrap(True)
+
+        self.btn_read.clicked.connect(self.on_read)
+        self.btn_start.clicked.connect(self.on_start)
+        self.btn_stop.clicked.connect(self.on_stop)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Target Volume:"))
+        top.addWidget(self.target_spin)
+        top.addStretch(1)
+        top.addWidget(self.btn_read)
+        top.addWidget(self.btn_start)
+        top.addWidget(self.btn_stop)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("Target Volume"))
-        layout.addWidget(self.input_target)
-        layout.addWidget(self.btn_move)
+        layout.addLayout(top)
+        layout.addWidget(self.status)
         self.setLayout(layout)
 
-    def move_to_target(self):
-        try:
-            target = float(self.input_target.text())
-            self.controller.move_to_target(target)
-        except ValueError:
-            print("[TargetPanel] Invalid target input")
+    def on_read(self):
+        res = self.controller.ocr_read_volume(camera_index=0)
+        if not res.ok:
+            self.status.setText("Status: OCR failed (check terminal).")
+            return
+        v = int(res.data.get("volume", -1))
+        self.status.setText(f"Status: OCR OK, current={v:04d}")
+
+    def on_start(self):
+        t = int(self.target_spin.value())
+        self.status.setText(f"Status: Running to target {t:04d} (see terminal logs)...")
+        self.controller.start_run_to_target(target=t, camera_index=0)
+
+    def on_stop(self):
+        self.controller.stop_run_to_target()
+        self.status.setText("Status: Stopped.")

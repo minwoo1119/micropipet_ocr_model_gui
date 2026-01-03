@@ -1,40 +1,133 @@
-import subprocess
+import json
 import os
-from PyQt5.QtCore import QTimer
+import subprocess
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, List
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+
+@dataclass
+class WorkerResult:
+    ok: bool
+    data: Dict[str, Any]
+    raw: str
+
 
 class Controller:
-    def __init__(self):
-        self.video_panel = None  # MainWindow에서 주입됨
+    """
+    GUI(system python) <-> Worker(conda pipet_env)
+    - short task: subprocess.run() + JSON 결과 파싱
+    - long task(목표 도달): subprocess.Popen() 유지 + stop 지원
+    """
+    def __init__(self, conda_env: str = "pipet_env"):
+        self.conda_env = conda_env
+        self.root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.worker_path = os.path.join(self.root_dir, "worker", "worker.py")
+        self.long_proc: Optional[subprocess.Popen] = None
 
-    def capture_frame(self):
-        """카메라 프레임 1장 캡처"""
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python",
-            os.path.join(PROJECT_ROOT, "worker", "capture_frame.py")
-        ])
+    def _run_worker(self, args: List[str], timeout: Optional[int] = 120) -> WorkerResult:
+        cmd = [
+            "conda", "run", "-n", self.conda_env,
+            "python", "-m", "worker.worker"
+        ] + args
 
-        # 0.5초 후 GUI 이미지 갱신
-        if self.video_panel:
-            QTimer.singleShot(500, self.video_panel.refresh_image)
 
-    def run_yolo(self):
-        """YOLO 객체 인식 (프레임 1장 기준)"""
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python",
-            os.path.join(PROJECT_ROOT, "worker", "yolo_worker.py")
-        ])
+        print("\n[Controller] Running worker command:")
+        print(" ".join(cmd))
 
-        if self.video_panel:
-            QTimer.singleShot(500, self.video_panel.refresh_image)
+        p = subprocess.run(
+            cmd,
+            cwd=self.root_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
 
-    def motor_test(self, direction, strength, duration):
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python",
-            os.path.join(PROJECT_ROOT, "worker", "motor_test.py"),
-            str(direction), str(strength), str(duration)
-        ])
+        if p.stdout:
+            print("\n[Worker STDOUT]")
+            print(p.stdout)
+
+        if p.stderr:
+            print("\n[Worker STDERR]")
+            print(p.stderr)
+
+        raw = (p.stdout or "").strip()
+
+        if p.returncode != 0:
+            print(f"[Controller] Worker exited with code {p.returncode}")
+            return WorkerResult(
+                False,
+                {
+                    "returncode": p.returncode,
+                    "stdout": p.stdout,
+                    "stderr": p.stderr,
+                },
+                raw,
+            )
+
+        lines = raw.splitlines()
+        last_line = lines[-1] if lines else ""
+
+        try:
+            data = json.loads(last_line)
+            return WorkerResult(
+                bool(data.get("ok", True)),
+                data,
+                raw,
+            )
+        except json.JSONDecodeError as e:
+            print("[Controller] JSON parse failed")
+            print("Last line:", last_line)
+
+            return WorkerResult(
+                False,
+                {
+                    "error": "Invalid JSON from worker",
+                    "exception": str(e),
+                    "stdout": p.stdout,
+                    "stderr": p.stderr,
+                },
+                raw,
+            )
+
+    # ----------- Camera / Preview -----------
+    def capture_frame(self, camera_index: int = 0) -> WorkerResult:
+        return self._run_worker(["--capture", f"--camera={camera_index}"], timeout=60)
+
+    # ----------- YOLO -----------
+    def yolo_detect(self, reset: bool = False, camera_index: int = 0) -> WorkerResult:
+        
+        print("[Controller] run_yolo called")
+        args = ["--yolo", f"--camera={camera_index}"]
+        if reset:
+            args.append("--reset-rois")
+        return self._run_worker(args, timeout=120)
+
+    # ----------- OCR(TRT) -----------
+    def ocr_read_volume(self, camera_index: int = 0) -> WorkerResult:
+        return self._run_worker(["--ocr", f"--camera={camera_index}"], timeout=120)
+
+    # ----------- Motor Test -----------
+    def motor_test(self, direction: int, strength: int, duration_ms: int) -> WorkerResult:
+        return self._run_worker(
+            ["--motor-test", f"--direction={direction}", f"--strength={strength}", f"--duration={duration_ms}"],
+            timeout=30,
+        )
+
+    # ----------- Run-to-target (long) -----------
+    def start_run_to_target(self, target: int, camera_index: int = 0) -> None:
+        self.stop_run_to_target()
+
+        cmd = [
+            "conda", "run", "-n", self.conda_env, "python", self.worker_path,
+            "--run-target", f"--target={target}", f"--camera={camera_index}"
+        ]
+        self.long_proc = subprocess.Popen(cmd, cwd=self.root_dir)
+
+    def stop_run_to_target(self) -> None:
+        if self.long_proc and self.long_proc.poll() is None:
+            try:
+                self.long_proc.terminate()
+            except Exception:
+                pass
+        self.long_proc = None
