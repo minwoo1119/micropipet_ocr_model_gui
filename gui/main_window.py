@@ -23,6 +23,8 @@ class MainWindow(QWidget):
         self.target_panel = TargetPanel(self.controller)
         self.motor_test_panel = MotorTestPanel(self.controller)
 
+        self.controller.video_panel = self.video_panel
+
         layout.addWidget(self.video_panel)
         layout.addWidget(self.yolo_panel)
         layout.addWidget(self.target_panel)

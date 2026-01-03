@@ -1,24 +1,40 @@
+import subprocess
+import os
+from PyQt5.QtCore import QTimer
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+
 class Controller:
     def __init__(self):
-        print("[Controller] Initialized")
+        self.video_panel = None  # MainWindow에서 주입됨
 
-    # ===== Camera =====
     def capture_frame(self):
-        print("[Controller] Capture single frame")
-        # TODO: cv2.VideoCapture로 1프레임 캡처
-        return None
+        """카메라 프레임 1장 캡처"""
+        subprocess.Popen([
+            "conda", "run", "-n", "pipet_env",
+            "python",
+            os.path.join(PROJECT_ROOT, "worker", "capture_frame.py")
+        ])
 
-    # ===== YOLO =====
+        # 0.5초 후 GUI 이미지 갱신
+        if self.video_panel:
+            QTimer.singleShot(500, self.video_panel.refresh_image)
+
     def run_yolo(self):
-        print("[Controller] Run YOLO detection")
+        """YOLO 객체 인식 (프레임 1장 기준)"""
+        subprocess.Popen([
+            "conda", "run", "-n", "pipet_env",
+            "python",
+            os.path.join(PROJECT_ROOT, "worker", "yolo_worker.py")
+        ])
 
-    def reset_yolo(self):
-        print("[Controller] Reset YOLO")
+        if self.video_panel:
+            QTimer.singleShot(500, self.video_panel.refresh_image)
 
-    # ===== Target volume control =====
-    def move_to_target(self, target_ul: float):
-        print(f"[Controller] Move to target: {target_ul} uL")
-
-    # ===== Motor test =====
-    def motor_test(self, direction: str, power: int, duration: float):
-        print(f"[Controller] Motor test → dir={direction}, power={power}, time={duration}s")
+    def motor_test(self, direction, strength, duration):
+        subprocess.Popen([
+            "conda", "run", "-n", "pipet_env",
+            "python",
+            os.path.join(PROJECT_ROOT, "worker", "motor_test.py"),
+            str(direction), str(strength), str(duration)
+        ])

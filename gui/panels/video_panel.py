@@ -1,24 +1,33 @@
-from PyQt5.QtWidgets import QGroupBox, QLabel, QPushButton, QVBoxLayout
+from PyQt5.QtWidgets import QGroupBox, QLabel, QVBoxLayout
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
+import os
 
+IMAGE_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..", "..", "shared", "latest_frame.jpg"
+)
 
 class VideoPanel(QGroupBox):
     def __init__(self, controller):
         super().__init__("Camera Preview")
         self.controller = controller
 
-        self.video_label = QLabel("No Frame")
-        self.video_label.setFixedSize(640, 480)
-        self.video_label.setAlignment(Qt.AlignCenter)
-
-        self.btn_capture = QPushButton("Capture Frame")
-        self.btn_capture.clicked.connect(self.capture_frame)
+        self.label = QLabel("No Image")
+        self.label.setFixedSize(640, 480)
+        self.label.setAlignment(Qt.AlignCenter)
 
         layout = QVBoxLayout()
-        layout.addWidget(self.video_label)
-        layout.addWidget(self.btn_capture)
+        layout.addWidget(self.label)
         self.setLayout(layout)
 
-    def capture_frame(self):
-        self.controller.capture_frame()
-        self.video_label.setText("Frame Captured (preview later)")
+    def refresh_image(self):
+        if os.path.exists(IMAGE_PATH):
+            pixmap = QPixmap(IMAGE_PATH)
+            self.label.setPixmap(
+                pixmap.scaled(
+                    self.label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+            )
