@@ -1,31 +1,26 @@
-import subprocess
-import os
-from PyQt5.QtWidgets import QGroupBox, QLabel, QLineEdit, QPushButton, QHBoxLayout
+from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QLineEdit, QPushButton, QLabel
+
 
 class TargetPanel(QGroupBox):
-    def __init__(self):
-        super().__init__("Target Dispensing Control")
+    def __init__(self, controller):
+        super().__init__("Target Volume Control")
+        self.controller = controller
 
-        self.project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(__file__))
-        )
-        self.worker = os.path.join(self.project_root, "worker", "worker.py")
+        self.input_target = QLineEdit()
+        self.input_target.setPlaceholderText("Target volume (uL)")
 
-        self.target_input = QLineEdit("120")
-        btn_run = QPushButton("▶ 목표 도달 실행")
+        self.btn_move = QPushButton("Move to Target")
+        self.btn_move.clicked.connect(self.move_to_target)
 
-        btn_run.clicked.connect(self.run_target)
-
-        layout = QHBoxLayout()
-        layout.addWidget(QLabel("목표 분주량"))
-        layout.addWidget(self.target_input)
-        layout.addWidget(btn_run)
-
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Target Volume"))
+        layout.addWidget(self.input_target)
+        layout.addWidget(self.btn_move)
         self.setLayout(layout)
 
-    def run_target(self):
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python", self.worker,
-            "--target", self.target_input.text()
-        ])
+    def move_to_target(self):
+        try:
+            target = float(self.input_target.text())
+            self.controller.move_to_target(target)
+        except ValueError:
+            print("[TargetPanel] Invalid target input")

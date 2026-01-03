@@ -1,45 +1,42 @@
-import subprocess
-import os
 from PyQt5.QtWidgets import (
-    QGroupBox, QLabel, QLineEdit, QPushButton,
-    QComboBox, QHBoxLayout
+    QGroupBox, QVBoxLayout, QHBoxLayout,
+    QComboBox, QSpinBox, QDoubleSpinBox,
+    QPushButton, QLabel
 )
 
-class MotorTestPanel(QGroupBox):
-    def __init__(self):
-        super().__init__("Motor Test")
 
-        self.project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(__file__))
-        )
-        self.worker = os.path.join(self.project_root, "worker", "worker.py")
+class MotorTestPanel(QGroupBox):
+    def __init__(self, controller):
+        super().__init__("Motor Test")
+        self.controller = controller
 
         self.dir_box = QComboBox()
         self.dir_box.addItems(["CW", "CCW"])
 
-        self.power = QLineEdit("50")
-        self.time = QLineEdit("2.0")
+        self.power_box = QSpinBox()
+        self.power_box.setRange(0, 100)
+        self.power_box.setValue(50)
 
-        btn_run = QPushButton("▶ 테스트 실행")
-        btn_run.clicked.connect(self.run_test)
+        self.time_box = QDoubleSpinBox()
+        self.time_box.setRange(0.1, 10.0)
+        self.time_box.setValue(1.0)
 
-        layout = QHBoxLayout()
-        layout.addWidget(QLabel("방향"))
+        self.btn_test = QPushButton("Run Motor Test")
+        self.btn_test.clicked.connect(self.run_test)
+
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Direction"))
         layout.addWidget(self.dir_box)
-        layout.addWidget(QLabel("세기"))
-        layout.addWidget(self.power)
-        layout.addWidget(QLabel("시간"))
-        layout.addWidget(self.time)
-        layout.addWidget(btn_run)
-
+        layout.addWidget(QLabel("Power"))
+        layout.addWidget(self.power_box)
+        layout.addWidget(QLabel("Duration (s)"))
+        layout.addWidget(self.time_box)
+        layout.addWidget(self.btn_test)
         self.setLayout(layout)
 
     def run_test(self):
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python", self.worker,
-            "--motor-test",
-            "--dir", self.dir_box.currentText(),
-            "--power", self.power.text(),
-            "--time", self.time.text()
-        ])
+        self.controller.motor_test(
+            direction=self.dir_box.currentText(),
+            power=self.power_box.value(),
+            duration=self.time_box.value()
+        )

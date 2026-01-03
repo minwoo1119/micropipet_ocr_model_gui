@@ -1,35 +1,18 @@
-import subprocess
-import os
-from PyQt5.QtWidgets import QGroupBox, QPushButton, QHBoxLayout
+from PyQt5.QtWidgets import QGroupBox, QPushButton, QVBoxLayout
+
 
 class YoloPanel(QGroupBox):
-    def __init__(self):
+    def __init__(self, controller):
         super().__init__("YOLO Object Detection")
+        self.controller = controller
 
-        self.project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(__file__))
-        )
-        self.worker = os.path.join(self.project_root, "worker", "worker.py")
+        self.btn_detect = QPushButton("Detect Objects")
+        self.btn_reset = QPushButton("Re-detect / Reset")
 
-        btn_detect = QPushButton("YOLO 인식 시작")
-        btn_redetect = QPushButton("재인식")
+        self.btn_detect.clicked.connect(self.controller.run_yolo)
+        self.btn_reset.clicked.connect(self.controller.reset_yolo)
 
-        btn_detect.clicked.connect(self.start_yolo)
-        btn_redetect.clicked.connect(self.redetect_yolo)
-
-        layout = QHBoxLayout()
-        layout.addWidget(btn_detect)
-        layout.addWidget(btn_redetect)
+        layout = QVBoxLayout()
+        layout.addWidget(self.btn_detect)
+        layout.addWidget(self.btn_reset)
         self.setLayout(layout)
-
-    def start_yolo(self):
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python", self.worker, "--yolo"
-        ])
-
-    def redetect_yolo(self):
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python", self.worker, "--yolo", "--reset"
-        ])
