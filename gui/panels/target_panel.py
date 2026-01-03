@@ -1,31 +1,56 @@
-import subprocess
-import os
-from PyQt5.QtWidgets import QGroupBox, QLabel, QLineEdit, QPushButton, QHBoxLayout
+from PyQt5.QtWidgets import (
+    QGroupBox, QLabel, QVBoxLayout, QHBoxLayout,
+    QPushButton, QSpinBox
+)
+
 
 class TargetPanel(QGroupBox):
-    def __init__(self):
-        super().__init__("Target Dispensing Control")
+    def __init__(self, controller):
+        super().__init__("Target Control (OCR(TRT) + Motor)")
 
-        self.project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(__file__))
-        )
-        self.worker = os.path.join(self.project_root, "worker", "worker.py")
+        self.controller = controller
 
-        self.target_input = QLineEdit("120")
-        btn_run = QPushButton("▶ 목표 도달 실행")
+        self.target_spin = QSpinBox()
+        self.target_spin.setRange(0, 9999)
+        self.target_spin.setValue(0)
 
-        btn_run.clicked.connect(self.run_target)
+        self.btn_read = QPushButton("Read Current Volume (OCR)")
+        self.btn_start = QPushButton("Run To Target")
+        self.btn_stop = QPushButton("Stop Run")
 
-        layout = QHBoxLayout()
-        layout.addWidget(QLabel("목표 분주량"))
-        layout.addWidget(self.target_input)
-        layout.addWidget(btn_run)
+        self.status = QLabel("Status: Idle")
+        self.status.setWordWrap(True)
 
+        self.btn_read.clicked.connect(self.on_read)
+        self.btn_start.clicked.connect(self.on_start)
+        self.btn_stop.clicked.connect(self.on_stop)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Target Volume:"))
+        top.addWidget(self.target_spin)
+        top.addStretch(1)
+        top.addWidget(self.btn_read)
+        top.addWidget(self.btn_start)
+        top.addWidget(self.btn_stop)
+
+        layout = QVBoxLayout()
+        layout.addLayout(top)
+        layout.addWidget(self.status)
         self.setLayout(layout)
 
-    def run_target(self):
-        subprocess.Popen([
-            "conda", "run", "-n", "pipet_env",
-            "python", self.worker,
-            "--target", self.target_input.text()
-        ])
+    def on_read(self):
+        res = self.controller.ocr_read_volume(camera_index=0)
+        if not res.ok:
+            self.status.setText("Status: OCR failed (check terminal).")
+            return
+        v = int(res.data.get("volume", -1))
+        self.status.setText(f"Status: OCR OK, current={v:04d}")
+
+    def on_start(self):
+        t = int(self.target_spin.value())
+        self.status.setText(f"Status: Running to target {t:04d} (see terminal logs)...")
+        self.controller.start_run_to_target(target=t, camera_index=0)
+
+    def on_stop(self):
+        self.controller.stop_run_to_target()
+        self.status.setText("Status: Stopped.")
