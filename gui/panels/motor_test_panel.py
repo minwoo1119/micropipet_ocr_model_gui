@@ -11,8 +11,8 @@ class MotorTestPanel(QGroupBox):
         self.controller = controller
 
         self.dir_combo = QComboBox()
-        self.dir_combo.addItem("0 (Increase)", 0)
-        self.dir_combo.addItem("1 (Decrease)", 1)
+        self.dir_combo.addItem("Increase (dir=0)", 0)
+        self.dir_combo.addItem("Decrease (dir=1)", 1)
 
         self.str_spin = QSpinBox()
         self.str_spin.setRange(0, 100)
@@ -29,11 +29,11 @@ class MotorTestPanel(QGroupBox):
         self.status.setWordWrap(True)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Direction:"))
+        row.addWidget(QLabel("Direction"))
         row.addWidget(self.dir_combo)
-        row.addWidget(QLabel("Strength:"))
+        row.addWidget(QLabel("Duty"))
         row.addWidget(self.str_spin)
-        row.addWidget(QLabel("Duration(ms):"))
+        row.addWidget(QLabel("Hold Time (ms)"))
         row.addWidget(self.dur_spin)
         row.addStretch(1)
         row.addWidget(self.btn_run)
@@ -44,11 +44,20 @@ class MotorTestPanel(QGroupBox):
         self.setLayout(layout)
 
     def on_run(self):
-        d = int(self.dir_combo.currentData())
-        s = int(self.str_spin.value())
-        t = int(self.dur_spin.value())
-        res = self.controller.motor_test(d, s, t)
+        direction = int(self.dir_combo.currentData())
+        strength = int(self.str_spin.value())
+        duration = int(self.dur_spin.value())
+
+        self.status.setText(
+            f"Running motor: dir={direction}, duty={strength}, hold={duration}ms"
+        )
+
+        res = self.controller.motor_test(direction, strength, duration)
+
         if not res.ok:
-            self.status.setText("Status: Motor test failed (check terminal).")
+            self.status.setText("Motor test failed (check terminal logs).")
             return
-        self.status.setText(f"Status: sent d={d}, s={s}, t={t}ms")
+
+        self.status.setText(
+            f"Done: dir={direction}, duty={strength}, held for {duration} ms"
+        )

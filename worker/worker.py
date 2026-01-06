@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import cv2
+import time
 
 from worker.paths import (
     ensure_state_dir, FRAME_JPG_PATH, ROIS_JSON_PATH
@@ -25,8 +26,8 @@ def main():
 
     ap.add_argument("--motor-test", action="store_true")
     ap.add_argument("--direction", type=int, default=0)
-    ap.add_argument("--strength", type=int, default=30)
-    ap.add_argument("--duration", type=int, default=200)
+    ap.add_argument("--strength", type=int, default=30)   # duty
+    ap.add_argument("--duration", type=int, default=200)  # ms (Python sleep)
 
     ap.add_argument("--run-target", action="store_true")
     ap.add_argument("--target", type=int, default=0)
@@ -53,7 +54,10 @@ def main():
     if args.yolo:
         frame = capture_one_frame(args.camera)
         rois, annotated_path = run_yolo_on_frame(frame, show_window=True)
-        print(json.dumps({"ok": True, "rois": rois, "annotated_path": annotated_path}, ensure_ascii=False))
+        print(json.dumps(
+            {"ok": True, "rois": rois, "annotated_path": annotated_path},
+            ensure_ascii=False
+        ))
         return
 
     # --- ocr ---
@@ -70,10 +74,26 @@ def main():
         if not ser.connect():
             print(json.dumps({"ok": False, "error": "serial connect failed"}, ensure_ascii=False))
             return
+
         try:
-            ser.send_motor_command(args.direction, args.strength, args.duration)
+            # ▶ 모터 구동 (대표님 프로토콜: dir + duty)
+            ser.run_motor(
+                direction=args.direction,
+                duty=args.strength,
+            )
+
+            # ▶ Python에서 시간 제어
+            time.sleep(args.duration / 1000.0)
+
+            # ▶ 정지 (duty = 0)
+            ser.run_motor(
+                direction=args.direction,
+                duty=0,
+            )
+
         finally:
             ser.close()
+
         print(json.dumps({"ok": True}, ensure_ascii=False))
         return
 
