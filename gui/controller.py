@@ -137,3 +137,70 @@ class Controller:
             except Exception:
                 pass
         self.long_proc = None
+
+    def linear_move(self, actuator_id: int, position: int) -> WorkerResult:
+        return self._run_worker([
+            "--linear-move",
+            f"--actuator-id={hex(actuator_id)}",
+            f"--position={position}",
+        ])
+    
+        # =================================================
+    # Linear Actuator – Pipetting (흡인 / 분주)
+    # =================================================
+    def pipetting_up(self) -> WorkerResult:
+        """
+        흡인/분주 상승
+        """
+        return self._run_worker(
+            ["--linear-pipetting-up"],
+            timeout=20,
+        )
+
+    def pipetting_down(self) -> WorkerResult:
+        """
+        흡인/분주 하강
+        """
+        return self._run_worker(
+            ["--linear-pipetting-down"],
+            timeout=20,
+        )
+
+    # =================================================
+    # Linear Actuator – Tip Change (팁 교체)
+    # =================================================
+    def tip_change_up(self) -> WorkerResult:
+        """
+        팁 교체 상승
+        """
+        return self._run_worker(
+            ["--tip-change-up"],
+            timeout=20,
+        )
+
+    def tip_change_down(self) -> WorkerResult:
+        """
+        팁 교체 하강
+        """
+        return self._run_worker(
+            ["--tip-change-down"],
+            timeout=20,
+        )
+
+    # =================================================
+    # Linear Actuator – Volume Linear
+    # =================================================
+    def volume_linear_move(self, position: int) -> WorkerResult:
+        """
+        용량 리니어 액추에이터 절대 위치 이동
+        """
+        return self._run_worker(
+            [
+                "--linear-move",
+                "--actuator-id=0x0A",
+                f"--position={int(position)}",
+            ],
+            timeout=20,
+        )
+
+

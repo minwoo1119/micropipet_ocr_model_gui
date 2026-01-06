@@ -29,8 +29,21 @@ def main():
     ap.add_argument("--strength", type=int, default=30)   # duty
     ap.add_argument("--duration", type=int, default=200)  # ms (Python sleep)
 
+
+    # ---- Linear actuator semantic actions ----
+    ap.add_argument("--linear-pipetting-up", action="store_true")
+    ap.add_argument("--linear-pipetting-down", action="store_true")
+
+    ap.add_argument("--tip-change-up", action="store_true")
+    ap.add_argument("--tip-change-down", action="store_true")
+
     ap.add_argument("--run-target", action="store_true")
     ap.add_argument("--target", type=int, default=0)
+
+    ap.add_argument("--linear-move", action="store_true")
+    ap.add_argument("--actuator-id", type=lambda x: int(x, 0))
+    ap.add_argument("--position", type=int)
+
 
     args = ap.parse_args()
 
@@ -102,6 +115,81 @@ def main():
         run_to_target(target=args.target, camera_index=args.camera)
         print(json.dumps({"ok": True, "done": True}, ensure_ascii=False))
         return
+    
+    # --- linear actuator move ---
+    if args.linear_move:
+        ser = SerialController()
+        if not ser.connect():
+            print(json.dumps({"ok": False, "error": "serial connect failed"}))
+            return
+
+        try:
+            from worker.actuator_linear import LinearActuator
+            act = LinearActuator(
+                serial=ser,
+                actuator_id=args.actuator_id,
+            )
+
+            act.move_to(args.position)
+        finally:
+            ser.close()
+
+        print(json.dumps({
+            "ok": True,
+            "actuator_id": args.actuator_id,
+            "position": args.position,
+        }))
+        return
+
+
+        # =================================================
+    # Linear actuator – semantic actions
+    # =================================================
+    if (
+        args.linear_pipetting_up
+        or args.linear_pipetting_down
+        or args.tip_change_up
+        or args.tip_change_down
+    ):
+        ser = SerialController()
+        if not ser.connect():
+            print(json.dumps({"ok": False, "error": "serial connect failed"}))
+            return
+
+        try:
+            from worker.actuator_linear import LinearActuator
+
+            # 펌웨어 기준:
+            # 0x0B = Pipetting & TipChange Linear
+            act = LinearActuator(
+                serial=ser,
+                actuator_id=0x0B,
+            )
+
+            # TODO: 실제 값은 INI / config로 빼는 게 이상적
+            PIPETTING_UP_POS = 1200
+            PIPETTING_DOWN_POS = 300
+            TIP_CHANGE_UP_POS = 2000
+            TIP_CHANGE_DOWN_POS = 400
+
+            if args.linear_pipetting_up:
+                act.pipetting_up(PIPETTING_UP_POS)
+
+            elif args.linear_pipetting_down:
+                act.pipetting_down(PIPETTING_DOWN_POS)
+
+            elif args.tip_change_up:
+                act.tip_change_up(TIP_CHANGE_UP_POS)
+
+            elif args.tip_change_down:
+                act.tip_change_down(TIP_CHANGE_DOWN_POS)
+
+        finally:
+            ser.close()
+
+        print(json.dumps({"ok": True}))
+        return
+
 
     print(json.dumps({"ok": False, "error": "no action specified"}, ensure_ascii=False))
 

@@ -3,21 +3,15 @@ import time
 from worker.camera import capture_one_frame
 from worker.ocr_trt import TRTWrapper, read_volume_trt
 from worker.serial_controller import SerialController
+from worker.actuator_volume_dc import VolumeDCActuator
+from worker.actuator_linear import LinearActuator
 from worker.paths import OCR_TRT_PATH
 
 
 # ================== Tuning Parameters ==================
-# OCR volume error -> motor position gain
-VOLUME_TO_POSITION_GAIN = 2.5   # 실험으로 반드시 튜닝
-
-# Max position change per step (safety)
-MAX_POSITION_STEP = 120
-
-# Acceptable volume tolerance
 VOLUME_TOLERANCE = 1
-
-# Mechanical settling time (sec)
 SETTLE_TIME = 0.7
+MAX_DUTY = 60
 
 
 def run_to_target(
@@ -25,10 +19,9 @@ def run_to_target(
     camera_index: int = 0,
     max_iter: int = 60,
 ):
-
     print("[RUN] run_to_target started")
 
-    # ---------- Load OCR (TensorRT) ----------
+    # ---------- OCR ----------
     trt_model = TRTWrapper(OCR_TRT_PATH)
 
     # ---------- Serial ----------
@@ -36,16 +29,15 @@ def run_to_target(
     if not ser.connect():
         raise RuntimeError("Serial connect failed")
 
-    # ---------- Initial motor setup ----------
-    ser.set_speed(400)     # RPM
-    ser.set_torque(350)    # Current
-
-    current_position = 0
+    # ---------- Actuators ----------
+    volume_motor = VolumeDCActuator(
+        serial=ser,
+        actuator_id=0x0C,   # 대표님 코드: ACTUATOR_ID_VOLUMECHANGEDCMOTOR
+    )
 
     try:
         for step in range(max_iter):
             frame = capture_one_frame(camera_index)
-
             cur_volume = int(read_volume_trt(frame, trt_model))
             err = target - cur_volume
 
@@ -60,32 +52,38 @@ def run_to_target(
                 print("[DONE] Target volume reached")
                 break
 
-            delta_pos = int(err * VOLUME_TO_POSITION_GAIN)
+            # -------- Control policy --------
+            direction = 0 if err < 0 else 1
+            abs_err = abs(err)
 
-            if delta_pos > MAX_POSITION_STEP:
-                delta_pos = MAX_POSITION_STEP
-            elif delta_pos < -MAX_POSITION_STEP:
-                delta_pos = -MAX_POSITION_STEP
+            if abs_err >= 300:
+                duty = 60
+                duration = 300
+            elif abs_err >= 100:
+                duty = 45
+                duration = 250
+            elif abs_err >= 30:
+                duty = 35
+                duration = 200
+            else:
+                duty = 25
+                duration = 150
 
-            current_position += delta_pos
-
-            print(
-                f"        Δpos={delta_pos:+d}, "
-                f"cmd_pos={current_position}"
+            volume_motor.move(
+                direction=direction,
+                duty=duty,
+                duration_ms=duration,
             )
-
-            ser.set_position(current_position)
 
             time.sleep(SETTLE_TIME)
 
         else:
-            print("[WARN] Max iteration reached without convergence")
+            print("[WARN] Max iteration reached")
 
     finally:
-        print("[CLEANUP] Stop motor & close serial")
+        print("[CLEANUP] Stop & close serial")
         try:
-            # 안전하게 정지
-            ser.set_speed(0)
+            volume_motor.move(direction=0, duty=0, duration_ms=50)
         except Exception:
             pass
         ser.close()
