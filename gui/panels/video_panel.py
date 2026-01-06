@@ -12,7 +12,7 @@ class VideoPanel(QGroupBox):
 
         self.video_label = QLabel("No image yet.\nPress 'Capture Frame'")
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setFixedSize(800, 450)
+        self.video_label.setFixedSize(600, 960)
         self.video_label.setStyleSheet("border: 1px solid #999;")
 
         self.volume_label = QLabel("Latest Volume: ----")

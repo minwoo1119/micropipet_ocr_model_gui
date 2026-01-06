@@ -53,7 +53,7 @@ def main():
     # --- yolo ---
     if args.yolo:
         frame = capture_one_frame(args.camera)
-        rois, annotated_path = run_yolo_on_frame(frame, show_window=True)
+        rois, annotated_path = run_yolo_on_frame(frame)
         print(json.dumps(
             {"ok": True, "rois": rois, "annotated_path": annotated_path},
             ensure_ascii=False
