@@ -113,6 +113,12 @@ class Controller:
             ["--motor-test", f"--direction={direction}", f"--strength={strength}", f"--duration={duration_ms}"],
             timeout=30,
         )
+    
+    def motor_stop(self):
+        return self._run_worker(
+            ["--motor-test", "--direction=0", "--strength=0", "--duration=1"],
+            timeout=5,
+        )
 
     # ----------- Run-to-target (long) -----------
     def start_run_to_target(self, target: int, camera_index: int = 0) -> None:

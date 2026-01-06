@@ -25,16 +25,6 @@ def run_to_target(
     camera_index: int = 0,
     max_iter: int = 60,
 ):
-    """
-    Frame-based iterative volume control
-
-    Loop:
-      1) Capture frame
-      2) OCR volume
-      3) Compute error
-      4) Convert volume error -> motor position delta
-      5) Move motor
-    """
 
     print("[RUN] run_to_target started")
 
@@ -47,19 +37,15 @@ def run_to_target(
         raise RuntimeError("Serial connect failed")
 
     # ---------- Initial motor setup ----------
-    # (대표님 펌웨어 기준)
     ser.set_speed(400)     # RPM
     ser.set_torque(350)    # Current
 
-    # ★ Position is managed absolutely in software
     current_position = 0
 
     try:
         for step in range(max_iter):
-            # 1) Capture frame
             frame = capture_one_frame(camera_index)
 
-            # 2) OCR
             cur_volume = int(read_volume_trt(frame, trt_model))
             err = target - cur_volume
 
@@ -70,15 +56,12 @@ def run_to_target(
                 f"err={err:+d}"
             )
 
-            # 3) Stop condition
             if abs(err) <= VOLUME_TOLERANCE:
                 print("[DONE] Target volume reached")
                 break
 
-            # 4) Volume error -> position delta
             delta_pos = int(err * VOLUME_TO_POSITION_GAIN)
 
-            # Safety clamp
             if delta_pos > MAX_POSITION_STEP:
                 delta_pos = MAX_POSITION_STEP
             elif delta_pos < -MAX_POSITION_STEP:
@@ -91,10 +74,8 @@ def run_to_target(
                 f"cmd_pos={current_position}"
             )
 
-            # 5) Move motor (absolute position)
             ser.set_position(current_position)
 
-            # 6) Wait for mechanical settling
             time.sleep(SETTLE_TIME)
 
         else:
