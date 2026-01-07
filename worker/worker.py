@@ -17,53 +17,75 @@ from worker.control_worker import run_to_target
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--camera", type=int, default=0)
 
+    # -------------------------------------------------
+    # Camera / Vision
+    # -------------------------------------------------
+    ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--capture", action="store_true")
     ap.add_argument("--yolo", action="store_true")
     ap.add_argument("--reset-rois", action="store_true")
     ap.add_argument("--ocr", action="store_true")
 
+    # -------------------------------------------------
+    # Motor test (DC motor)
+    # -------------------------------------------------
     ap.add_argument("--motor-test", action="store_true")
     ap.add_argument("--direction", type=int, default=0)
     ap.add_argument("--strength", type=int, default=30)   # duty
-    ap.add_argument("--duration", type=int, default=200)  # ms (Python sleep)
+    ap.add_argument("--duration", type=int, default=200)  # ms
 
-
-    # ---- Linear actuator semantic actions ----
+    # -------------------------------------------------
+    # Linear actuator semantic actions
+    # -------------------------------------------------
     ap.add_argument("--linear-pipetting-up", action="store_true")
     ap.add_argument("--linear-pipetting-down", action="store_true")
-
     ap.add_argument("--tip-change-up", action="store_true")
     ap.add_argument("--tip-change-down", action="store_true")
 
+    # -------------------------------------------------
+    # Target-based control
+    # -------------------------------------------------
     ap.add_argument("--run-target", action="store_true")
     ap.add_argument("--target", type=int, default=0)
 
+    # -------------------------------------------------
+    # Low-level linear control
+    # -------------------------------------------------
     ap.add_argument("--linear-move", action="store_true")
     ap.add_argument("--actuator-id", type=lambda x: int(x, 0))
     ap.add_argument("--position", type=int)
 
+    # -------------------------------------------------
+    # MightyZap Force
+    # -------------------------------------------------
+    ap.add_argument("--linear-force-on", action="store_true")
 
     args = ap.parse_args()
 
     ensure_state_dir()
 
-    # reset rois
+    # -------------------------------------------------
+    # Reset ROIs
+    # -------------------------------------------------
     if args.reset_rois and os.path.exists(ROIS_JSON_PATH):
         try:
             os.remove(ROIS_JSON_PATH)
         except Exception:
             pass
 
-    # --- capture ---
+    # -------------------------------------------------
+    # Capture
+    # -------------------------------------------------
     if args.capture:
         frame = capture_one_frame(args.camera)
         cv2.imwrite(FRAME_JPG_PATH, frame)
         print(json.dumps({"ok": True, "frame_path": FRAME_JPG_PATH}, ensure_ascii=False))
         return
 
-    # --- yolo ---
+    # -------------------------------------------------
+    # YOLO
+    # -------------------------------------------------
     if args.yolo:
         frame = capture_one_frame(args.camera)
         rois, annotated_path = run_yolo_on_frame(frame)
@@ -73,7 +95,9 @@ def main():
         ))
         return
 
-    # --- ocr ---
+    # -------------------------------------------------
+    # OCR
+    # -------------------------------------------------
     if args.ocr:
         trt_model = TRTWrapper(OCR_TRT_PATH)
         frame = capture_one_frame(args.camera)
@@ -81,42 +105,66 @@ def main():
         print(json.dumps({"ok": True, "volume": int(vol)}, ensure_ascii=False))
         return
 
-    # --- motor test ---
-    if args.motor_test:
+    # -------------------------------------------------
+    # Force ON (standalone)
+    # -------------------------------------------------
+    if args.linear_force_on:
         ser = SerialController()
         if not ser.connect():
-            print(json.dumps({"ok": False, "error": "serial connect failed"}, ensure_ascii=False))
+            print(json.dumps({"ok": False, "error": "serial connect failed"}))
             return
 
         try:
-            # ▶ 모터 구동 (대표님 프로토콜: dir + duty)
-            ser.run_motor(
-                direction=args.direction,
-                duty=args.strength,
+            actuator_id = args.actuator_id if args.actuator_id is not None else 0x0B
+            ser.send_mightyzap_force_onoff(
+                actuator_id=actuator_id,
+                onoff=1,
             )
-
-            # ▶ Python에서 시간 제어
-            time.sleep(args.duration / 1000.0)
-
-            # ▶ 정지 (duty = 0)
-            ser.run_motor(
-                direction=args.direction,
-                duty=0,
-            )
-
+            time.sleep(0.1)
         finally:
             ser.close()
 
-        print(json.dumps({"ok": True}, ensure_ascii=False))
+        print(json.dumps({"ok": True, "force": "on"}))
         return
 
-    # --- run to target ---
+    # -------------------------------------------------
+    # Motor test (DC motor)
+    # -------------------------------------------------
+    if args.motor_test:
+        ser = SerialController()
+        if not ser.connect():
+            print(json.dumps({"ok": False, "error": "serial connect failed"}))
+            return
+
+        try:
+            ser.send_pipette_change_volume(
+                actuator_id=0x0C,  # ⚠️ 실제 DC motor ID로 맞춰야 함
+                direction=args.direction,
+                duty=args.strength,
+            )
+            time.sleep(args.duration / 1000.0)
+            ser.send_pipette_change_volume(
+                actuator_id=0x0C,
+                direction=args.direction,
+                duty=0,
+            )
+        finally:
+            ser.close()
+
+        print(json.dumps({"ok": True}))
+        return
+
+    # -------------------------------------------------
+    # Run to target (vision-based)
+    # -------------------------------------------------
     if args.run_target:
         run_to_target(target=args.target, camera_index=args.camera)
         print(json.dumps({"ok": True, "done": True}, ensure_ascii=False))
         return
-    
-    # --- linear actuator move ---
+
+    # -------------------------------------------------
+    # Low-level linear move
+    # -------------------------------------------------
     if args.linear_move:
         ser = SerialController()
         if not ser.connect():
@@ -125,10 +173,16 @@ def main():
 
         try:
             from worker.actuator_linear import LinearActuator
+
+            actuator_id = args.actuator_id if args.actuator_id is not None else 0x0B
             act = LinearActuator(
                 serial=ser,
-                actuator_id=args.actuator_id,
+                actuator_id=actuator_id,
             )
+
+            # 🔥 Force ON 필수
+            ser.send_mightyzap_force_onoff(actuator_id, 1)
+            time.sleep(0.1)
 
             act.move_to(args.position)
         finally:
@@ -136,15 +190,14 @@ def main():
 
         print(json.dumps({
             "ok": True,
-            "actuator_id": args.actuator_id,
+            "actuator_id": actuator_id,
             "position": args.position,
         }))
         return
 
-
-        # =================================================
-    # Linear actuator – semantic actions
-    # =================================================
+    # -------------------------------------------------
+    # Linear semantic actions
+    # -------------------------------------------------
     if (
         args.linear_pipetting_up
         or args.linear_pipetting_down
@@ -159,14 +212,19 @@ def main():
         try:
             from worker.actuator_linear import LinearActuator
 
-            # 펌웨어 기준:
-            # 0x0B = Pipetting & TipChange Linear
+            # Firmware fixed ID
+            actuator_id = 0x0B
+
             act = LinearActuator(
                 serial=ser,
-                actuator_id=0x0B,
+                actuator_id=actuator_id,
             )
 
-            # TODO: 실제 값은 INI / config로 빼는 게 이상적
+            # 🔥 반드시 Force ON 먼저
+            ser.send_mightyzap_force_onoff(actuator_id, 1)
+            time.sleep(0.1)
+
+            # Position presets (C# 기준)
             PIPETTING_UP_POS = 1200
             PIPETTING_DOWN_POS = 300
             TIP_CHANGE_UP_POS = 2000
@@ -190,7 +248,9 @@ def main():
         print(json.dumps({"ok": True}))
         return
 
-
+    # -------------------------------------------------
+    # No action
+    # -------------------------------------------------
     print(json.dumps({"ok": False, "error": "no action specified"}, ensure_ascii=False))
 
 

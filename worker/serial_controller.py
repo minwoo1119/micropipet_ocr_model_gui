@@ -2,131 +2,179 @@ import time
 import serial
 from typing import Optional
 
+from worker.make_packet import MakePacket
+
 
 class SerialController:
-    """
-    Low-level serial controller.
-    - ONLY responsible for packet creation & transmission
-    - Protocol exactly follows CEO C# firmware
-    """
-
-    # =================================================
-    # Protocol constants (common)
-    # =================================================
-    HEADER1 = 0xEA
-    HEADER2 = 0xEB
-    ENDOFBYTE = 0xED
-
-    # =================================================
-    # Command codes
-    # =================================================
-    # --- Geared DC Motor (Volume Change) ---
-    CMD_CHANGE_VOLUME = 0xA1
-
-    # --- MightyZap Linear ---
-    CMD_MZ_SET_POSITION = 0x01
-
-    # =================================================
-    # Init / connection
-    # =================================================
+    # =========================
+    # Init / Connection
+    # =========================
     def __init__(
         self,
         port: str = "/dev/ttyUSB0",
         baudrate: int = 115200,
+        timeout: float = 1.0,
     ):
         self.port = port
         self.baudrate = baudrate
+        self.timeout = timeout
         self.ser: Optional[serial.Serial] = None
 
     def connect(self) -> bool:
-        self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
+        """
+        Open serial port
+        """
+        self.ser = serial.Serial(
+            port=self.port,
+            baudrate=self.baudrate,
+            timeout=self.timeout,
+        )
         time.sleep(0.5)  # MCU boot / buffer settle
         return self.ser.is_open
 
     def close(self):
+        """
+        Close serial port
+        """
         if self.ser and self.ser.is_open:
             self.ser.close()
         self.ser = None
 
-    # =================================================
-    # Low-level helpers
-    # =================================================
-    def _send_packet(self, packet: bytes):
+    def is_connected(self) -> bool:
+        return self.ser is not None and self.ser.is_open
+
+    # =========================
+    # Internal send
+    # =========================
+    def _send(self, packet: bytes):
         if not self.ser or not self.ser.is_open:
-            raise RuntimeError("Serial not open")
+            raise RuntimeError("Serial port not open")
+
+        print(f"[TX] {packet.hex()}")
+
         self.ser.write(packet)
+        self.ser.flush()
 
-    @staticmethod
-    def _checksum(data: bytes) -> int:
+    # =========================
+    # MightyZap Linear Actuator
+    # =========================
+    def send_mightyzap_set_position(self, actuator_id: int, position: int):
         """
-        checksum = 0xFF - (sum(data) % 256)
+        MightyZap: Set Position
+        C# : MIGHTYZAP_MakePacket_SetPosition
         """
-        return (0xFF - (sum(data) % 256)) & 0xFF
+        packet = MakePacket.set_position(
+            id_=actuator_id,
+            position=position,
+        )
+        self._send(packet)
 
-    # =================================================
-    # Packet builder
-    # =================================================
-    def _build_packet(self, actuator_id: int, cmd: int, payload: bytes) -> bytes:
+    def send_mightyzap_set_speed(self, actuator_id: int, speed: int):
         """
-        Generic packet builder (13 bytes fixed)
+        MightyZap: Set Speed
+        C# : MIGHTYZAP_MakePacket_SetSpeed
         """
-        packet = bytearray(13)
-        packet[0] = self.HEADER1
-        packet[1] = self.HEADER2
-        packet[2] = actuator_id
-        packet[3] = 0x07
-        packet[4] = cmd
+        packet = MakePacket.set_speed(
+            id_=actuator_id,
+            speed=speed,
+        )
+        self._send(packet)
 
-        # payload (max 6 bytes)
-        for i in range(6):
-            packet[5 + i] = payload[i] if i < len(payload) else 0x00
-
-        packet[11] = self._checksum(packet[4:11])
-        packet[12] = self.ENDOFBYTE
-        return bytes(packet)
-
-    # =================================================
-    # Public APIs (used by actuator classes)
-    # =================================================
-
-    # ---------- Geared DC Motor ----------
-    def send_volume_dc(self, actuator_id: int, direction: int, duty: int):
+    def send_mightyzap_set_current(self, actuator_id: int, current: int):
         """
-        direction: 0 / 1
-        duty: 0 ~ 100
+        MightyZap: Set Current
+        C# : MIGHTYZAP_MakePacket_SetCurrent
+        """
+        packet = MakePacket.set_current(
+            id_=actuator_id,
+            current=current,
+        )
+        self._send(packet)
+
+    def send_mightyzap_force_onoff(self, actuator_id: int, onoff: int):
+        """
+        MightyZap: Force ON/OFF
+        C# : MIGHTYZAP_MakePacket_SetForceOnOff
+        """
+        onoff = 1 if onoff else 0
+        packet = MakePacket.set_force_onoff(
+            id_=actuator_id,
+            onoff=onoff,
+        )
+        self._send(packet)
+
+    def send_mightyzap_get_moving(self, actuator_id: int):
+        """
+        MightyZap: Get Moving State
+        C# : MIGHTYZAP_MakePacket_GetMoving
+        """
+        packet = MakePacket.get_moving(
+            id_=actuator_id,
+        )
+        self._send(packet)
+
+    def send_mightyzap_get_feedback(self, actuator_id: int):
+        """
+        MightyZap: Get Feedback Data
+        C# : MIGHTYZAP_MakePacket_GetFeedbackData
+        """
+        packet = MakePacket.get_feedback(
+            id_=actuator_id,
+        )
+        self._send(packet)
+
+    # =========================
+    # MyActuator (Absolute Angle)
+    # =========================
+    def send_myactuator_set_absolute_angle(
+        self,
+        actuator_id: int,
+        speed: int,
+        angle: int,
+    ):
+        """
+        MyActuator: Set Absolute Angle
+        C# : MYACTUATOR_makePacket_setAbsoluteAngle
+        """
+        packet = MakePacket.myactuator_set_absolute_angle(
+            id_=actuator_id,
+            speed=speed,
+            angle=angle,
+        )
+        self._send(packet)
+
+    def send_myactuator_get_absolute_angle(self, actuator_id: int):
+        """
+        MyActuator: Get Absolute Angle
+        C# : MYACTUATOR_makePacket_getAbsoluteAngle
+        """
+        packet = MakePacket.myactuator_get_absolute_angle(
+            id_=actuator_id,
+        )
+        self._send(packet)
+
+    # =========================
+    # Geared DC Motor (Pipette)
+    # =========================
+    def send_pipette_change_volume(
+        self,
+        actuator_id: int,
+        direction: int,
+        duty: int,
+    ):
+        """
+        Geared DC Motor: Change Pipette Volume
+        C# : GEAREDDCMOTOR_makePacket_ChangePipetteVolume
+
+        direction : 0 / 1
+        duty      : 0 ~ 100
         """
         direction = 0 if int(direction) <= 0 else 1
         duty = max(0, min(100, int(duty)))
 
-        payload = bytes([direction, duty])
-        packet = self._build_packet(
-            actuator_id=actuator_id,
-            cmd=self.CMD_CHANGE_VOLUME,
-            payload=payload,
+        packet = MakePacket.pipette_change_volume(
+            id_=actuator_id,
+            direction=direction,
+            duty=duty,
         )
-        self._send_packet(packet)
-
-    # ---------- MightyZap Linear (low-level) ----------
-    def send_linear_position(self, actuator_id: int, position: int):
-        """
-        position: ushort (0 ~ 65535)
-        """
-        pos = max(0, min(0xFFFF, int(position)))
-        payload = bytes([
-            pos & 0xFF,
-            (pos >> 8) & 0xFF,
-        ])
-        packet = self._build_packet(
-            actuator_id=actuator_id,
-            cmd=self.CMD_MZ_SET_POSITION,
-            payload=payload,
-        )
-        self._send_packet(packet)
-
-    # ---------- MightyZap Linear (semantic alias) ----------
-    def send_mightyzap_set_position(self, actuator_id: int, position: int):
-        """
-        Semantic wrapper for MightyZap SetPosition.
-        Actuator classes should call THIS method.
-        """
-        self.send_linear_position(actuator_id, position)
+        self._send(packet)
