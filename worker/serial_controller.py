@@ -1,36 +1,41 @@
 import time
-import serial
 import threading
 import queue
-
 from typing import Optional
+
+import serial
+
 from worker.make_packet import MakePacket
 
 
 class SerialController:
-    # =========================
-    # Init / Connection
-    # =========================
+    """
+    - poll 완전 OFF
+    - TX: 50ms tick로 큐에서 1개씩 전송
+    - RX: length 기반 프레임 파싱 (LEN + 6)
+    """
+
+    MAX_QUEUE = 50          # 🔥 3이면 GUI에서 연속 클릭할 때 너무 쉽게 DROP됨
+    TX_TICK_SEC = 0.05      # 50ms
+
     def __init__(
         self,
         port: str = "/dev/ttyUSB0",
         baudrate: int = 115200,
-        timeout: float = 1.0,
-        device_id: int = 1,
+        timeout: float = 0.05,   # 🔥 RX가 빨라야 응답을 잘 본다
     ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
-        self.device_id = device_id
 
         self.ser: Optional[serial.Serial] = None
-
-        # ===== C# 대응 제어 구조 =====
-        self.tx_queue: queue.Queue[bytes] = queue.Queue()
         self.running: bool = False
 
-        self._last_packet: Optional[bytes] = None
+        self.tx_queue: "queue.Queue[bytes]" = queue.Queue()
 
+        # 디버그
+        self.rx_debug: bool = True
+        self.tx_debug: bool = True
 
     # =========================
     # Connection
@@ -40,171 +45,143 @@ class SerialController:
             port=self.port,
             baudrate=self.baudrate,
             timeout=self.timeout,
+            write_timeout=0.2,
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
+            rtscts=False,
+            dsrdtr=False,
         )
 
-        time.sleep(0.5)  # MCU boot / buffer settle
+        # 버퍼 초기화 (중요)
+        self.ser.reset_input_buffer()
+        self.ser.reset_output_buffer()
+
+        time.sleep(0.2)
         self.running = True
 
-        # TX worker (C# CommThreadProc + 50ms Sleep 대응)
-        threading.Thread(
-            target=self._tx_worker,
-            daemon=True,
-        ).start()
-
-        # RX debug worker
-        threading.Thread(
-            target=self._rx_worker,
-            daemon=True,
-        ).start()
+        threading.Thread(target=self._tx_worker, daemon=True).start()
+        threading.Thread(target=self._rx_worker, daemon=True).start()
 
         return self.ser.is_open
 
     def close(self):
         self.running = False
-        time.sleep(0.1)
-
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-        self.ser = None
-
-    def is_connected(self) -> bool:
-        return self.ser is not None and self.ser.is_open
-
+        time.sleep(0.05)
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+        finally:
+            self.ser = None
 
     # =========================
-    # Internal send (QUEUE ONLY)
+    # ENQUEUE
     # =========================
-    def _send(self, packet: bytes):
+    def enqueue(self, packet: bytes):
         if not self.ser or not self.ser.is_open:
-            raise RuntimeError("Serial port not open")
-
-        # 🔒 동일 패킷 연속 전송 방지
-        if packet == self._last_packet:
+            print("[ENQUEUE] serial not open, skip")
             return
 
-        self._last_packet = packet
-        self.tx_queue.put(packet)
-        print(f"[ENQUEUE] {packet.hex(' ')}")
+        if self.tx_queue.qsize() >= self.MAX_QUEUE:
+            print(f"[DROP] queue full({self.tx_queue.qsize()}) {packet.hex(' ')}")
+            return
 
+        self.tx_queue.put(packet)
+        if self.tx_debug:
+            print(f"[ENQUEUE] {packet.hex(' ')}")
 
     # =========================
-    # TX Worker (50ms Tick)
+    # TX Worker
     # =========================
     def _tx_worker(self):
-        """
-        ✔ 50ms 주기
-        ✔ 큐에 있는 패킷만 전송
-        """
         while self.running:
             try:
-                packet = None
+                if self.ser and self.ser.is_open:
+                    try:
+                        packet = self.tx_queue.get_nowait()
+                    except queue.Empty:
+                        packet = None
 
-                if not self.tx_queue.empty():
-                    packet = self.tx_queue.get()
-
-                if packet is not None and self.ser and self.ser.is_open:
-                    self.ser.write(packet)
-                    print(f"[TX] {packet.hex(' ')}")
+                    if packet:
+                        self.ser.write(packet)
+                        self.ser.flush()
+                        if self.tx_debug:
+                            print(f"[TX] {packet.hex(' ')}")
 
             except Exception as e:
                 print("[TX ERROR]", e)
 
-            time.sleep(0.05)
-
+            time.sleep(self.TX_TICK_SEC)
 
     # =========================
-    # RX Worker (Debug / ACK 확인용)
+    # RX Worker (LEN 기반)
     # =========================
     def _rx_worker(self):
-        buffer = bytearray()
+        buf = bytearray()
 
         while self.running:
             try:
-                if self.ser and self.ser.in_waiting:
-                    buffer += self.ser.read(self.ser.in_waiting)
+                if not (self.ser and self.ser.is_open):
+                    time.sleep(0.01)
+                    continue
 
-                    while True:
-                        if len(buffer) < 6:
-                            break
+                n = self.ser.in_waiting
+                if n:
+                    chunk = self.ser.read(n)
+                    if not chunk:
+                        # 이게 뜨면 보통 포트 다중접속/케이블/전원 문제
+                        # 또는 timeout 설정 꼬임
+                        time.sleep(0.01)
+                        continue
 
-                        if buffer[0] != 0xEA or buffer[1] != 0xEB:
-                            buffer.pop(0)
-                            continue
+                    buf += chunk
 
-                        try:
-                            end = buffer.index(0xED)
-                        except ValueError:
-                            break
+                # 프레임 파싱: EA EB | ID | LEN | ... (LEN bytes) | CHK | ED
+                while True:
+                    if len(buf) < 6:
+                        break
 
-                        frame = buffer[:end + 1]
-                        buffer = buffer[end + 1:]
+                    # 헤더 정렬
+                    if not (buf[0] == 0xEA and buf[1] == 0xEB):
+                        buf.pop(0)
+                        continue
 
-                        print(f"[RX FRAME] {frame.hex(' ')}")
+                    length = buf[3]
+                    frame_len = int(length) + 6  # ✅ 핵심
+
+                    if len(buf) < frame_len:
+                        break
+
+                    frame = bytes(buf[:frame_len])
+                    del buf[:frame_len]
+
+                    if self.rx_debug:
+                        print(f"[RX] {frame.hex(' ')}")
 
             except Exception as e:
                 print("[RX ERROR]", e)
 
-            time.sleep(0.01)
-
+            time.sleep(0.005)
 
     # =========================
-    # MightyZap Linear Actuator
+    # High-level APIs
     # =========================
     def send_mightyzap_set_position(self, actuator_id: int, position: int):
-        """
-        ✔ C#과 동일: SetPosition ONLY
-        """
-        self._send(MakePacket.set_position(actuator_id, position))
+        self.enqueue(MakePacket.set_position(actuator_id, position))
 
     def send_mightyzap_set_speed(self, actuator_id: int, speed: int):
-        self._send(MakePacket.set_speed(actuator_id, speed))
+        self.enqueue(MakePacket.set_speed(actuator_id, speed))
 
     def send_mightyzap_set_current(self, actuator_id: int, current: int):
-        self._send(MakePacket.set_current(actuator_id, current))
-
-
-    # =========================
-    # MyActuator (Hollow Shaft)
-    # =========================
-    def send_myactuator_set_absolute_angle(
-        self,
-        actuator_id: int,
-        speed: int,
-        angle: int
-    ):
-        self._send(
-            MakePacket.myactuator_set_absolute_angle(
-                actuator_id, speed, angle
-            )
-        )
-
-
-    # =========================
-    # Geared DC Motor (Volume)
-    # =========================
-    def send_pipette_change_volume(
-        self,
-        actuator_id: int,
-        direction: int,
-        duty: int
-    ):
-        direction = 0 if int(direction) <= 0 else 1
-        duty = max(0, min(100, int(duty)))
-
-        self._send(
-            MakePacket.pipette_change_volume(
-                actuator_id, direction, duty
-            )
-        )
-
-    def send_pipette_stop(self, actuator_id: int):
-        self._send(
-            MakePacket.pipette_change_volume(actuator_id, 0, 0)
-        )
+        self.enqueue(MakePacket.set_current(actuator_id, current))
 
     def send_mightyzap_force_onoff(self, actuator_id: int, onoff: int):
-        self._send(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
+        self.enqueue(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
 
+    def send_pipette_change_volume(self, actuator_id: int, direction: int, duty: int):
+        direction = 0 if int(direction) <= 0 else 1
+        duty = max(0, min(100, int(duty)))
+        self.enqueue(MakePacket.pipette_change_volume(actuator_id, direction, duty))
+
+    def send_pipette_stop(self, actuator_id: int):
+        self.enqueue(MakePacket.pipette_change_volume(actuator_id, 0, 0))

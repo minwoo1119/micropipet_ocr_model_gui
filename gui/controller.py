@@ -1,4 +1,5 @@
 import json
+import time
 import os
 import subprocess
 from dataclasses import dataclass
@@ -75,19 +76,35 @@ class Controller:
         self._tip_down = False
         self._volume_down = False
 
-        # -------------------------------------------------
+        # ==============================
         # MightyZap 초기화 (C#과 1:1)
-        # -------------------------------------------------
-        # 0x0B : 흡인분주 / 팁교체
-        self.serial.send_mightyzap_set_speed(0x0B, 500)
-        self.serial.send_mightyzap_set_current(0x0B, 300)
+        # ==============================
+
+        # ---- 0x0B : 흡인분주 / 팁교체 ----
         self.serial.send_mightyzap_force_onoff(0x0B, 1)
+        time.sleep(0.1)
 
-        # 0x0A : 용량 조절 리니어
-        self.serial.send_mightyzap_set_speed(0x0A, 500)
-        self.serial.send_mightyzap_set_current(0x0A, 300)
+        self.serial.send_mightyzap_set_speed(0x0B, 500)
+        time.sleep(0.1)
+
+        self.serial.send_mightyzap_set_current(0x0B, 300)
+        time.sleep(0.1)
+
+        self.serial.send_mightyzap_set_position(0x0B, 300)
+        time.sleep(0.1)
+
+        # ---- 0x0A : 용량 조절 리니어 ----
         self.serial.send_mightyzap_force_onoff(0x0A, 1)
+        time.sleep(0.1)
 
+        self.serial.send_mightyzap_set_speed(0x0A, 500)
+        time.sleep(0.1)
+
+        self.serial.send_mightyzap_set_current(0x0A, 300)
+        time.sleep(0.1)
+
+        self.serial.send_mightyzap_set_position(0x0A, 300)
+        time.sleep(0.1)
 
     # =================================================
     # Internal worker runner (Vision only)
