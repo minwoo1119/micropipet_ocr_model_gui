@@ -4,8 +4,6 @@ from gui.controller import Controller
 from gui.panels.video_panel import VideoPanel
 from gui.panels.yolo_panel import YoloPanel
 from gui.panels.target_panel import TargetPanel
-from gui.panels.motor_test_panel import MotorTestPanel
-from gui.panels.linear_actuator_panel import LinearActuatorPanel
 from gui.panels.pipette_panel import PipettePanel
 
 
@@ -23,16 +21,12 @@ class MainWindow(QWidget):
         self.video_panel = VideoPanel(self.controller)
         self.yolo_panel = YoloPanel(self.controller, self.video_panel)
         self.target_panel = TargetPanel(self.controller)
-        self.motor_test_panel = MotorTestPanel(self.controller)
-        self.linear_panel = LinearActuatorPanel(self.controller)
         self.pipette_panel = PipettePanel(self.controller)
 
         # ---------- Right side (stacked) ----------
         right_layout = QVBoxLayout()
         right_layout.addWidget(self.yolo_panel)
         right_layout.addWidget(self.target_panel)
-        right_layout.addWidget(self.linear_panel)
-        right_layout.addWidget(self.motor_test_panel)
         right_layout.addWidget(self.pipette_panel)
         right_layout.addStretch(1)  # 아래 여백
 
