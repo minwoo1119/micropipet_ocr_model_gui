@@ -29,7 +29,6 @@ class SerialController:
         self.tx_queue: queue.Queue[bytes] = queue.Queue()
         self.running: bool = False
 
-        # 🔒 중복 전송 방지용
         self._last_packet: Optional[bytes] = None
 
 
@@ -49,13 +48,13 @@ class SerialController:
         time.sleep(0.5)  # MCU boot / buffer settle
         self.running = True
 
-        # 단일 TX 워커 (C# Timer 50ms 대응)
+        # TX worker (C# CommThreadProc + 50ms Sleep 대응)
         threading.Thread(
             target=self._tx_worker,
             daemon=True,
         ).start()
 
-        # RX 디버그 워커
+        # RX debug worker
         threading.Thread(
             target=self._rx_worker,
             daemon=True,
@@ -98,11 +97,10 @@ class SerialController:
         """
         ✔ 50ms 주기
         ✔ 큐에 있는 패킷만 전송
-        ❌ 상태 polling 없음
         """
         while self.running:
             try:
-                packet = None  # ⭐ 중요: 루프마다 초기화
+                packet = None
 
                 if not self.tx_queue.empty():
                     packet = self.tx_queue.get()
@@ -118,7 +116,7 @@ class SerialController:
 
 
     # =========================
-    # RX Worker (debug / ACK 확인용)
+    # RX Worker (Debug / ACK 확인용)
     # =========================
     def _rx_worker(self):
         buffer = bytearray()
@@ -156,6 +154,9 @@ class SerialController:
     # MightyZap Linear Actuator
     # =========================
     def send_mightyzap_set_position(self, actuator_id: int, position: int):
+        """
+        ✔ C#과 동일: SetPosition ONLY
+        """
         self._send(MakePacket.set_position(actuator_id, position))
 
     def send_mightyzap_set_speed(self, actuator_id: int, speed: int):
@@ -164,24 +165,42 @@ class SerialController:
     def send_mightyzap_set_current(self, actuator_id: int, current: int):
         self._send(MakePacket.set_current(actuator_id, current))
 
-    def send_mightyzap_force_onoff(self, actuator_id: int, onoff: int):
-        self._send(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
+
+    # =========================
+    # MyActuator (Hollow Shaft)
+    # =========================
+    def send_myactuator_set_absolute_angle(
+        self,
+        actuator_id: int,
+        speed: int,
+        angle: int
+    ):
+        self._send(
+            MakePacket.myactuator_set_absolute_angle(
+                actuator_id, speed, angle
+            )
+        )
 
 
     # =========================
-    # MyActuator
+    # Geared DC Motor (Volume)
     # =========================
-    def send_myactuator_set_absolute_angle(self, actuator_id: int, speed: int, angle: int):
-        self._send(MakePacket.myactuator_set_absolute_angle(actuator_id, speed, angle))
-
-
-    # =========================
-    # Geared DC Motor (Pipette)
-    # =========================
-    def send_pipette_change_volume(self, actuator_id: int, direction: int, duty: int):
+    def send_pipette_change_volume(
+        self,
+        actuator_id: int,
+        direction: int,
+        duty: int
+    ):
         direction = 0 if int(direction) <= 0 else 1
         duty = max(0, min(100, int(duty)))
-        self._send(MakePacket.pipette_change_volume(actuator_id, direction, duty))
+
+        self._send(
+            MakePacket.pipette_change_volume(
+                actuator_id, direction, duty
+            )
+        )
 
     def send_pipette_stop(self, actuator_id: int):
-        self._send(MakePacket.pipette_change_volume(actuator_id, 0, 0))
+        self._send(
+            MakePacket.pipette_change_volume(actuator_id, 0, 0)
+        )

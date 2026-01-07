@@ -19,7 +19,6 @@ class PipettePanel(QWidget):
         self.controller = controller
 
         # ===== Volume Rotary DC motor =====
-        # C#에서 사용하던 actuator ID 그대로
         self.volume_dc = VolumeDCActuator(
             serial=self.controller.serial,
             actuator_id=0x0C,
@@ -113,7 +112,6 @@ class PipettePanel(QWidget):
         btn_ccw = QPushButton("CCW")
         btn_stop = QPushButton("정지")
 
-        # ✅ C# MouseDown / MouseUp 구조 대응
         btn_cw.pressed.connect(lambda: self._rotary_start(direction=1))
         btn_cw.released.connect(self.volume_dc.stop)
 
