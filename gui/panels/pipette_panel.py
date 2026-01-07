@@ -4,34 +4,34 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
-    QLineEdit,
     QGroupBox,
-    QMessageBox,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 from gui.controller import Controller
 
 
 class PipettePanel(QWidget):
     """
-    Pipette control panel (PyQt5)
-    C# GUI 버튼 구조 그대로 대응
-    Controller 중심 구조
+    Pipette DC motor panel
+    C# GUI 구조 1:1 대응
+    (VolumeDCActuator API 기준)
     """
+
+    TIMER_MS = 50  # C# DispatcherTimer 주기
 
     def __init__(self, controller: Controller, parent=None):
         super().__init__(parent)
 
-        # -----------------------------
-        # Controller / Actuator binding
-        # -----------------------------
         self.controller = controller
-        self.volume_dc = controller.volume_dc  # 핵심 수정 포인트
+        self.volume_dc = controller.volume_dc
 
-        # Parameters
         self.duty = 40
-        self.duration = 800  # ms
+        self.direction = None  # 1 or 0 or None
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.TIMER_MS)
+        self.timer.timeout.connect(self._on_timer)
 
         self._build_ui()
 
@@ -39,109 +39,83 @@ class PipettePanel(QWidget):
     # UI
     # -------------------------------------------------
     def _build_ui(self):
-        main_layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self)
 
-        main_layout.addWidget(QLabel("<b>Pipette Control Panel</b>"))
+        layout.addWidget(QLabel("<b>Pipette Control (C# identical)</b>"))
 
         # =====================
-        # Parameters
-        # =====================
-        param_box = QGroupBox("Parameters")
-        param_layout = QVBoxLayout(param_box)
-
         # Duty
-        param_layout.addWidget(QLabel("Duty (%)"))
+        # =====================
+        duty_box = QGroupBox("Duty (%)")
+        duty_layout = QVBoxLayout(duty_box)
+
         self.duty_slider = QSlider(Qt.Horizontal)
         self.duty_slider.setRange(0, 100)
         self.duty_slider.setValue(self.duty)
         self.duty_slider.valueChanged.connect(self._on_duty_change)
-        param_layout.addWidget(self.duty_slider)
 
         self.duty_label = QLabel(f"{self.duty} %")
-        param_layout.addWidget(self.duty_label)
 
-        # Duration
-        param_layout.addWidget(QLabel("Duration (ms)"))
-        self.duration_edit = QLineEdit(str(self.duration))
-        param_layout.addWidget(self.duration_edit)
+        duty_layout.addWidget(self.duty_slider)
+        duty_layout.addWidget(self.duty_label)
 
-        main_layout.addWidget(param_box)
+        layout.addWidget(duty_box)
 
         # =====================
-        # Aspirate / Dispense
+        # Control buttons
         # =====================
-        io_box = QGroupBox("Aspirate / Dispense")
-        io_layout = QVBoxLayout(io_box)
+        ctrl_box = QGroupBox("Pipette")
+        ctrl_layout = QVBoxLayout(ctrl_box)
 
-        btn_asp = QPushButton("Aspirate")
-        btn_asp.clicked.connect(lambda: self._run(direction=1))
-        io_layout.addWidget(btn_asp)
+        btn_asp = QPushButton("Aspirate (Hold)")
+        btn_disp = QPushButton("Dispense (Hold)")
 
-        btn_disp = QPushButton("Dispense")
-        btn_disp.clicked.connect(lambda: self._run(direction=0))
-        io_layout.addWidget(btn_disp)
+        btn_asp.pressed.connect(lambda: self._start(1))
+        btn_asp.released.connect(self._stop)
 
-        main_layout.addWidget(io_box)
+        btn_disp.pressed.connect(lambda: self._start(0))
+        btn_disp.released.connect(self._stop)
 
-        # =====================
-        # Volume Adjust
-        # =====================
-        vol_box = QGroupBox("Volume Adjust")
-        vol_layout = QVBoxLayout(vol_box)
+        ctrl_layout.addWidget(btn_asp)
+        ctrl_layout.addWidget(btn_disp)
 
-        btn_plus = QPushButton("Volume +")
-        btn_plus.clicked.connect(lambda: self._run(direction=1))
-        vol_layout.addWidget(btn_plus)
-
-        btn_minus = QPushButton("Volume -")
-        btn_minus.clicked.connect(lambda: self._run(direction=0))
-        vol_layout.addWidget(btn_minus)
-
-        main_layout.addWidget(vol_box)
-
-        # =====================
-        # Tip Control
-        # =====================
-        tip_box = QGroupBox("Tip Control")
-        tip_layout = QVBoxLayout(tip_box)
-
-        btn_attach = QPushButton("Tip Attach")
-        btn_attach.clicked.connect(lambda: self._run(direction=1))
-        tip_layout.addWidget(btn_attach)
-
-        btn_detach = QPushButton("Tip Detach")
-        btn_detach.clicked.connect(lambda: self._run(direction=0))
-        tip_layout.addWidget(btn_detach)
-
-        main_layout.addWidget(tip_box)
+        layout.addWidget(ctrl_box)
 
         # =====================
         # STOP
         # =====================
         btn_stop = QPushButton("STOP")
-        btn_stop.clicked.connect(self.volume_dc.stop)
-        btn_stop.setStyleSheet("background-color: red; color: white;")
-        main_layout.addWidget(btn_stop)
+        btn_stop.setStyleSheet("background-color:red;color:white;")
+        btn_stop.clicked.connect(self._stop)
+        layout.addWidget(btn_stop)
+
+        layout.addStretch(1)
 
     # -------------------------------------------------
-    # Helpers
+    # Logic (C# identical)
     # -------------------------------------------------
     def _on_duty_change(self, value: int):
         self.duty = value
         self.duty_label.setText(f"{value} %")
 
-    def _run(self, direction: int):
-        try:
-            duration = int(self.duration_edit.text())
+    def _start(self, direction: int):
+        self.direction = direction
+        if not self.timer.isActive():
+            self.timer.start()
 
-            if duration <= 0:
-                raise ValueError("Duration must be > 0")
+    def _stop(self):
+        self.timer.stop()
+        self.direction = None
+        self.volume_dc.stop()
 
-            self.volume_dc.run_for(
-                direction=direction,
-                duty=self.duty,
-                duration_ms=duration,
-            )
+    def _on_timer(self):
+        """
+        50ms마다 동일 명령 반복 송신
+        """
+        if self.direction is None:
+            return
 
-        except Exception as e:
-            QMessageBox.critical(self, "Invalid Parameter", str(e))
+        if self.direction == 1:
+            self.volume_dc.increase(self.duty)
+        else:
+            self.volume_dc.decrease(self.duty)
