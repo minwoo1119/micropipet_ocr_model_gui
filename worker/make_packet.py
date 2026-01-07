@@ -149,8 +149,10 @@ class MakePacket:
     # ==============================
     @staticmethod
     def pipette_change_volume(id_: int, direction: int, duty: int) -> bytes:
+        
+        duty_hex_encoded = int(f"{duty}", 16) & 0xFF
         return MakePacket._base_packet(
             id_,
             0xA1,
-            [direction, duty]
+            [direction, duty_hex_encoded]
         )
