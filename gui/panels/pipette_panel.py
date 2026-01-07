@@ -1,162 +1,147 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+from PyQt5.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QLineEdit,
+    QGroupBox,
+    QMessageBox,
+)
+from PyQt5.QtCore import Qt
 
-from worker.actuator_volume_dc import VolumeDCActuator
+from gui.controller import Controller
 
 
-class PipettePanel(tk.Frame):
+class PipettePanel(QWidget):
     """
-    Pipette control panel
-    (C# GUI equivalent, with duty / duration input)
+    Pipette control panel (PyQt5)
+    C# GUI 버튼 구조 그대로 대응
+    Controller 중심 구조
     """
 
-    def __init__(
-        self,
-        master,
-        volume_dc: VolumeDCActuator,
-    ):
-        super().__init__(master)
+    def __init__(self, controller: Controller, parent=None):
+        super().__init__(parent)
 
-        self.volume_dc = volume_dc
+        # -----------------------------
+        # Controller / Actuator binding
+        # -----------------------------
+        self.controller = controller
+        self.volume_dc = controller.volume_dc  # 핵심 수정 포인트
 
-        # default values (C# 기준값)
-        self.duty_var = tk.IntVar(value=40)
-        self.duration_var = tk.IntVar(value=800)
+        # Parameters
+        self.duty = 40
+        self.duration = 800  # ms
 
         self._build_ui()
 
     # -------------------------------------------------
-    # UI Layout
+    # UI
     # -------------------------------------------------
     def _build_ui(self):
-        self.columnconfigure(0, weight=1)
+        main_layout = QVBoxLayout(self)
 
-        title = ttk.Label(self, text="Pipette Control Panel", font=("Arial", 14, "bold"))
-        title.grid(row=0, column=0, pady=10)
+        main_layout.addWidget(QLabel("<b>Pipette Control Panel</b>"))
 
-        # =============================
-        # Parameter Input
-        # =============================
-        frame_param = ttk.LabelFrame(self, text="Parameters")
-        frame_param.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        # =====================
+        # Parameters
+        # =====================
+        param_box = QGroupBox("Parameters")
+        param_layout = QVBoxLayout(param_box)
 
-        # Duty slider
-        ttk.Label(frame_param, text="Duty (%)").grid(row=0, column=0, sticky="w")
-        duty_scale = ttk.Scale(
-            frame_param,
-            from_=0,
-            to=100,
-            orient="horizontal",
-            command=self._on_duty_change,
-        )
-        duty_scale.set(self.duty_var.get())
-        duty_scale.grid(row=1, column=0, sticky="ew", pady=3)
+        # Duty
+        param_layout.addWidget(QLabel("Duty (%)"))
+        self.duty_slider = QSlider(Qt.Horizontal)
+        self.duty_slider.setRange(0, 100)
+        self.duty_slider.setValue(self.duty)
+        self.duty_slider.valueChanged.connect(self._on_duty_change)
+        param_layout.addWidget(self.duty_slider)
 
-        self.duty_label = ttk.Label(
-            frame_param, text=f"{self.duty_var.get()} %"
-        )
-        self.duty_label.grid(row=1, column=1, padx=5)
+        self.duty_label = QLabel(f"{self.duty} %")
+        param_layout.addWidget(self.duty_label)
 
-        # Duration entry
-        ttk.Label(frame_param, text="Duration (ms)").grid(row=2, column=0, sticky="w")
-        duration_entry = ttk.Entry(
-            frame_param, textvariable=self.duration_var, width=10
-        )
-        duration_entry.grid(row=3, column=0, sticky="w", pady=3)
+        # Duration
+        param_layout.addWidget(QLabel("Duration (ms)"))
+        self.duration_edit = QLineEdit(str(self.duration))
+        param_layout.addWidget(self.duration_edit)
 
-        frame_param.columnconfigure(0, weight=1)
+        main_layout.addWidget(param_box)
 
-        # =============================
+        # =====================
         # Aspirate / Dispense
-        # =============================
-        frame_io = ttk.LabelFrame(self, text="Aspirate / Dispense")
-        frame_io.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        # =====================
+        io_box = QGroupBox("Aspirate / Dispense")
+        io_layout = QVBoxLayout(io_box)
 
-        ttk.Button(
-            frame_io,
-            text="Aspirate",
-            command=lambda: self._run(direction=1),
-        ).pack(fill="x", padx=5, pady=3)
+        btn_asp = QPushButton("Aspirate")
+        btn_asp.clicked.connect(lambda: self._run(direction=1))
+        io_layout.addWidget(btn_asp)
 
-        ttk.Button(
-            frame_io,
-            text="Dispense",
-            command=lambda: self._run(direction=0),
-        ).pack(fill="x", padx=5, pady=3)
+        btn_disp = QPushButton("Dispense")
+        btn_disp.clicked.connect(lambda: self._run(direction=0))
+        io_layout.addWidget(btn_disp)
 
-        # =============================
+        main_layout.addWidget(io_box)
+
+        # =====================
         # Volume Adjust
-        # =============================
-        frame_vol = ttk.LabelFrame(self, text="Volume Adjust")
-        frame_vol.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        # =====================
+        vol_box = QGroupBox("Volume Adjust")
+        vol_layout = QVBoxLayout(vol_box)
 
-        ttk.Button(
-            frame_vol,
-            text="Volume +",
-            command=lambda: self._run(direction=1),
-        ).pack(fill="x", padx=5, pady=3)
+        btn_plus = QPushButton("Volume +")
+        btn_plus.clicked.connect(lambda: self._run(direction=1))
+        vol_layout.addWidget(btn_plus)
 
-        ttk.Button(
-            frame_vol,
-            text="Volume -",
-            command=lambda: self._run(direction=0),
-        ).pack(fill="x", padx=5, pady=3)
+        btn_minus = QPushButton("Volume -")
+        btn_minus.clicked.connect(lambda: self._run(direction=0))
+        vol_layout.addWidget(btn_minus)
 
-        # =============================
+        main_layout.addWidget(vol_box)
+
+        # =====================
         # Tip Control
-        # =============================
-        frame_tip = ttk.LabelFrame(self, text="Tip Control")
-        frame_tip.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
+        # =====================
+        tip_box = QGroupBox("Tip Control")
+        tip_layout = QVBoxLayout(tip_box)
 
-        ttk.Button(
-            frame_tip,
-            text="Tip Attach",
-            command=lambda: self._run(direction=1),
-        ).pack(fill="x", padx=5, pady=3)
+        btn_attach = QPushButton("Tip Attach")
+        btn_attach.clicked.connect(lambda: self._run(direction=1))
+        tip_layout.addWidget(btn_attach)
 
-        ttk.Button(
-            frame_tip,
-            text="Tip Detach",
-            command=lambda: self._run(direction=0),
-        ).pack(fill="x", padx=5, pady=3)
+        btn_detach = QPushButton("Tip Detach")
+        btn_detach.clicked.connect(lambda: self._run(direction=0))
+        tip_layout.addWidget(btn_detach)
 
-        # =============================
-        # Stop
-        # =============================
-        ttk.Button(
-            self,
-            text="STOP",
-            command=self.volume_dc.stop,
-            style="Danger.TButton",
-        ).grid(row=5, column=0, padx=10, pady=10, sticky="ew")
+        main_layout.addWidget(tip_box)
+
+        # =====================
+        # STOP
+        # =====================
+        btn_stop = QPushButton("STOP")
+        btn_stop.clicked.connect(self.volume_dc.stop)
+        btn_stop.setStyleSheet("background-color: red; color: white;")
+        main_layout.addWidget(btn_stop)
 
     # -------------------------------------------------
     # Helpers
     # -------------------------------------------------
-    def _on_duty_change(self, value):
-        duty = int(float(value))
-        self.duty_var.set(duty)
-        self.duty_label.config(text=f"{duty} %")
+    def _on_duty_change(self, value: int):
+        self.duty = value
+        self.duty_label.setText(f"{value} %")
 
     def _run(self, direction: int):
-        """
-        Read GUI parameters and run motor
-        """
         try:
-            duty = int(self.duty_var.get())
-            duration = int(self.duration_var.get())
-
-            if not (0 <= duty <= 100):
-                raise ValueError("Duty must be 0~100")
+            duration = int(self.duration_edit.text())
 
             if duration <= 0:
                 raise ValueError("Duration must be > 0")
 
             self.volume_dc.run_for(
                 direction=direction,
-                duty=duty,
+                duty=self.duty,
                 duration_ms=duration,
             )
 
         except Exception as e:
-            messagebox.showerror("Invalid Parameter", str(e))
+            QMessageBox.critical(self, "Invalid Parameter", str(e))

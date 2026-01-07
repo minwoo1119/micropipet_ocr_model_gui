@@ -25,6 +25,7 @@ class MainWindow(QWidget):
         self.target_panel = TargetPanel(self.controller)
         self.motor_test_panel = MotorTestPanel(self.controller)
         self.linear_panel = LinearActuatorPanel(self.controller)
+        self.pipette_panel = PipettePanel(self.controller)
 
         # ---------- Right side (stacked) ----------
         right_layout = QVBoxLayout()
