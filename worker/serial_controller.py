@@ -29,9 +29,8 @@ class SerialController:
         self.tx_queue: queue.Queue[bytes] = queue.Queue()
         self.running: bool = False
 
-        # status 주기 제어
-        self._last_status_time = 0.0
-        self._status_interval = 0.2  # 200ms (idle 상태에서만)
+        # 🔒 중복 전송 방지용
+        self._last_packet: Optional[bytes] = None
 
 
     # =========================
@@ -50,13 +49,13 @@ class SerialController:
         time.sleep(0.5)  # MCU boot / buffer settle
         self.running = True
 
-        # 단일 TX 워커만 사용 (C# Timer 역할)
+        # 단일 TX 워커 (C# Timer 50ms 대응)
         threading.Thread(
             target=self._tx_worker,
             daemon=True,
         ).start()
 
-        # (선택) RX 로그용 – 있으면 디버깅에 도움
+        # RX 디버그 워커
         threading.Thread(
             target=self._rx_worker,
             daemon=True,
@@ -83,33 +82,30 @@ class SerialController:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Serial port not open")
 
+        # 🔒 동일 패킷 연속 전송 방지
+        if packet == self._last_packet:
+            return
+
+        self._last_packet = packet
         self.tx_queue.put(packet)
         print(f"[ENQUEUE] {packet.hex(' ')}")
 
 
     # =========================
-    # TX Worker (Single 50ms Tick)
+    # TX Worker (50ms Tick)
     # =========================
     def _tx_worker(self):
         """
-        C# Timer.Interval = 50ms 구조 대응
-        - 명령 우선
-        - idle 시에만 status 1개 전송
+        ✔ 50ms 주기
+        ✔ 큐에 있는 패킷만 전송
+        ❌ 상태 polling 없음
         """
         while self.running:
             try:
-                packet = None
+                packet = None  # ⭐ 중요: 루프마다 초기화
 
-                # 1️⃣ 명령 우선
                 if not self.tx_queue.empty():
                     packet = self.tx_queue.get()
-
-                # 2️⃣ idle 상태에서만 status polling
-                else:
-                    now = time.time()
-                    if now - self._last_status_time >= self._status_interval:
-                        packet = MakePacket.request_check_operate_status()
-                        self._last_status_time = now
 
                 if packet is not None and self.ser and self.ser.is_open:
                     self.ser.write(packet)
@@ -118,7 +114,7 @@ class SerialController:
             except Exception as e:
                 print("[TX ERROR]", e)
 
-            time.sleep(0.05)  # ★ 단일 50ms Tick
+            time.sleep(0.05)
 
 
     # =========================
@@ -133,16 +129,13 @@ class SerialController:
                     buffer += self.ser.read(self.ser.in_waiting)
 
                     while True:
-                        # 최소 프레임 길이
                         if len(buffer) < 6:
                             break
 
-                        # 헤더 찾기
                         if buffer[0] != 0xEA or buffer[1] != 0xEB:
                             buffer.pop(0)
                             continue
 
-                        # 푸터 찾기 (ED)
                         try:
                             end = buffer.index(0xED)
                         except ValueError:
@@ -174,21 +167,12 @@ class SerialController:
     def send_mightyzap_force_onoff(self, actuator_id: int, onoff: int):
         self._send(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
 
-    def send_mightyzap_get_moving(self, actuator_id: int):
-        self._send(MakePacket.get_moving(actuator_id))
-
-    def send_mightyzap_get_feedback(self, actuator_id: int):
-        self._send(MakePacket.get_feedback(actuator_id))
-
 
     # =========================
     # MyActuator
     # =========================
     def send_myactuator_set_absolute_angle(self, actuator_id: int, speed: int, angle: int):
         self._send(MakePacket.myactuator_set_absolute_angle(actuator_id, speed, angle))
-
-    def send_myactuator_get_absolute_angle(self, actuator_id: int):
-        self._send(MakePacket.myactuator_get_absolute_angle(actuator_id))
 
 
     # =========================

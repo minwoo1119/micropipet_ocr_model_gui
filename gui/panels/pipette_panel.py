@@ -19,10 +19,10 @@ class PipettePanel(QWidget):
         self.controller = controller
 
         # ===== Volume Rotary DC motor =====
-        # actuator_id = C#에서 쓰던 ID 그대로
+        # C#에서 사용하던 actuator ID 그대로
         self.volume_dc = VolumeDCActuator(
             serial=self.controller.serial,
-            actuator_id=0xA1,
+            actuator_id=0x0C,
         )
 
         self._build_ui()
@@ -95,7 +95,7 @@ class PipettePanel(QWidget):
         main.addWidget(move_box)
 
         # ======================================================
-        # Rotary Volume Control (중공축 모터)
+        # Rotary Volume Control (중공축 DC 모터)
         # ======================================================
         rotary_box = QGroupBox("Volume Rotary Motor")
         rotary_layout = QVBoxLayout(rotary_box)
@@ -110,20 +110,23 @@ class PipettePanel(QWidget):
         btn_row = QHBoxLayout()
 
         btn_cw = QPushButton("CW")
-        btn_cw.clicked.connect(lambda: self._rotary_run(direction=1))
-
-        btn_stop = QPushButton("정지")
-        btn_stop.clicked.connect(self.volume_dc.stop)
-
         btn_ccw = QPushButton("CCW")
-        btn_ccw.clicked.connect(lambda: self._rotary_run(direction=0))
+        btn_stop = QPushButton("정지")
+
+        # ✅ C# MouseDown / MouseUp 구조 대응
+        btn_cw.pressed.connect(lambda: self._rotary_start(direction=1))
+        btn_cw.released.connect(self.volume_dc.stop)
+
+        btn_ccw.pressed.connect(lambda: self._rotary_start(direction=0))
+        btn_ccw.released.connect(self.volume_dc.stop)
+
+        btn_stop.clicked.connect(self.volume_dc.stop)
 
         btn_row.addWidget(btn_cw)
         btn_row.addWidget(btn_stop)
         btn_row.addWidget(btn_ccw)
 
         rotary_layout.addLayout(btn_row)
-
         main.addWidget(rotary_box)
 
         main.addStretch(1)
@@ -143,13 +146,9 @@ class PipettePanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
-    def _rotary_run(self, direction: int):
+    def _rotary_start(self, direction: int):
         try:
             duty = int(self.tb_duty.text())
-            self.volume_dc.run_for(
-                direction=direction,
-                duty=duty,
-                duration_ms=500,  # C# transmitTimer 개념 대응
-            )
+            self.volume_dc.run(direction=direction, duty=duty)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))

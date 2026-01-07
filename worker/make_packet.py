@@ -1,49 +1,46 @@
 from typing import ByteString
 
+
 class MakePacket:
     # ===== Constants =====
     HEADER1 = 0xEA
     HEADER2 = 0xEB
     ENDOFBYTE = 0xED
 
-    WAIT_CMD = 0x00
+    # ==============================
+    # Command Codes (C# 기준)
+    # ==============================
+    MIGHTYZAP_SetPosition        = 0x01
+    MIGHTYZAP_SetSpeed           = 0x02
+    MIGHTYZAP_SetCurrent         = 0x03
+    MIGHTYZAP_SetForceOnOff      = 0x04
+    MIGHTYZAP_GetMovingState     = 0x05
+    MIGHTYZAP_GetFeedbackData    = 0x07
 
-    MIGHTYZAP_WAIT_COMMAND      = 0x00
-    MIGHTYZAP_SetPosition       = 0x01
-    MIGHTYZAP_SetSpeed          = 0x02
-    MIGHTYZAP_SetCurrent        = 0x03
-    MIGHTYZAP_SetForceOnOff     = 0x04
-    MIGHTYZAP_GetMovingState    = 0x05
-    MIGHTYZAP_GetFeedbackData   = 0x07
-    MyActuator_setAbsoluteAngle = 0xA4
-    MyActuator_getAbsoluteAngle = 0x92
+    MyActuator_setAbsoluteAngle  = 0xA4
+    MyActuator_getAbsoluteAngle  = 0x92
+
     GearedDC_changePipetteVolume = 0xA1
 
     # ==============================
-    # 내부 공통 함수
+    # Checksum (C# 동일)
     # ==============================
     @staticmethod
     def _checksum(packet: ByteString) -> int:
-        """
-        C#:
-        for (int i = 4; i < 11; i++)
-            checksumRaw += packet[i];
-        checksum = 0xFF - (checksumRaw % 256)
-        """
         checksum_raw = sum(packet[4:11])
         return (0xFF - (checksum_raw % 256)) & 0xFF
 
+    # ==============================
+    # Base Packet (13 bytes)
+    # ==============================
     @staticmethod
     def _base_packet(id_: int, cmd: int, data: list[int]) -> bytes:
-        """
-        공통 패킷 생성기 (13바이트 고정)
-        """
         packet = bytearray(13)
-        packet[0]  = MakePacket.HEADER1
-        packet[1]  = MakePacket.HEADER2
-        packet[2]  = id_
-        packet[3]  = 0x07
-        packet[4]  = cmd
+        packet[0] = MakePacket.HEADER1
+        packet[1] = MakePacket.HEADER2
+        packet[2] = id_              # ✅ actuator ID
+        packet[3] = 0x07
+        packet[4] = cmd              # ✅ command
 
         for i in range(6):
             packet[5 + i] = data[i] if i < len(data) else 0x00
@@ -60,10 +57,7 @@ class MakePacket:
         return MakePacket._base_packet(
             id_,
             MakePacket.MIGHTYZAP_SetPosition,
-            [
-                position & 0xFF,
-                (position >> 8) & 0xFF,
-            ]
+            [position & 0xFF, (position >> 8) & 0xFF]
         )
 
     @staticmethod
@@ -71,10 +65,7 @@ class MakePacket:
         return MakePacket._base_packet(
             id_,
             MakePacket.MIGHTYZAP_SetSpeed,
-            [
-                speed & 0xFF,
-                (speed >> 8) & 0xFF,
-            ]
+            [speed & 0xFF, (speed >> 8) & 0xFF]
         )
 
     @staticmethod
@@ -82,10 +73,7 @@ class MakePacket:
         return MakePacket._base_packet(
             id_,
             MakePacket.MIGHTYZAP_SetCurrent,
-            [
-                current & 0xFF,
-                (current >> 8) & 0xFF,
-            ]
+            [current & 0xFF, (current >> 8) & 0xFF]
         )
 
     @staticmethod
@@ -93,7 +81,7 @@ class MakePacket:
         return MakePacket._base_packet(
             id_,
             MakePacket.MIGHTYZAP_SetForceOnOff,
-            [onoff]
+            [1 if onoff else 0]
         )
 
     @staticmethod
@@ -111,9 +99,9 @@ class MakePacket:
             MakePacket.MIGHTYZAP_GetFeedbackData,
             []
         )
-        
+
     # ==============================
-    # C# REQUSET_Check_Operate_Status()
+    # Status Polling (C# 동일)
     # ==============================
     @staticmethod
     def request_check_operate_status() -> bytes:
@@ -133,7 +121,6 @@ class MakePacket:
         packet[12] = MakePacket.ENDOFBYTE
         return bytes(packet)
 
-
     # ==============================
     # MyActuator
     # ==============================
@@ -147,41 +134,35 @@ class MakePacket:
             (angle >> 16) & 0xFF,
             (angle >> 24) & 0xFF,
         ]
-        packet = bytearray(13)
-        packet[0] = MakePacket.HEADER1
-        packet[1] = MakePacket.HEADER2
-        packet[2] = id_
-        packet[3] = 0x07
-        packet[4] = 0xA4
-
-        for i in range(6):
-            packet[5 + i] = data[i]
-
-        packet[11] = MakePacket._checksum(packet)
-        packet[12] = MakePacket.ENDOFBYTE
-        return bytes(packet)
+        return MakePacket._base_packet(
+            id_,
+            MakePacket.MyActuator_setAbsoluteAngle,
+            data
+        )
 
     @staticmethod
     def myactuator_get_absolute_angle(id_: int) -> bytes:
         return MakePacket._base_packet(
             id_,
-            0x92,
+            MakePacket.MyActuator_getAbsoluteAngle,
             []
         )
 
     # ==============================
-    # Geared DC Motor (Pipette)
+    # Geared DC Motor (Pipette Volume)
     # ==============================
     @staticmethod
     def pipette_change_volume(id_: int, direction: int, duty: int) -> bytes:
         """
-        duty는 '16진수로 해석될 값' (C# byte.Parse(duty.ToString(), Hex))
-        예: duty=30 → 0x30
+        id_    : 0x0C (메모 기준)
+        direction : 0 = CCW, 1 = CW
+        duty      : 0 ~ 100 (그대로 byte 전송)
         """
-        duty_hex_encoded = int(str(duty), 16) & 0xFF
+        direction = 1 if direction > 0 else 0
+        duty = max(0, min(100, duty))
+
         return MakePacket._base_packet(
             id_,
             MakePacket.GearedDC_changePipetteVolume,
-            [direction & 0xFF, duty_hex_encoded]
+            [direction, duty]
         )
-

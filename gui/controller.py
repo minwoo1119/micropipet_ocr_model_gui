@@ -4,9 +4,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
 
-# 🔽 추가
 from worker.serial_controller import SerialController
-from worker.actuator_volume_dc import VolumeDCActuator
 
 
 @dataclass
@@ -20,8 +18,13 @@ class Controller:
     """
     GUI(system python) <-> Worker(conda pipet_env)
 
-    - subprocess 기반 작업: YOLO / OCR / run-to-target / linear actuator
-    - direct serial 기반 작업: pipette DC motor
+    ✔ subprocess 기반:
+        - YOLO
+        - OCR
+        - linear actuator (흡인/팁/용량 하강·이동)
+
+    ✔ direct serial 기반:
+        - pipette DC motor (GUI → SerialController 직결)
     """
 
     def __init__(self, conda_env: str = "pipet_env"):
@@ -34,15 +37,10 @@ class Controller:
         self.long_proc: Optional[subprocess.Popen] = None
 
         # ---------------------------
-        # 🔥 Direct serial (pipette DC motor)
+        # 🔥 Serial only (DC motor 포함)
         # ---------------------------
         self.serial = SerialController("/dev/ttyUSB0")
         self.serial.connect()
-
-        self.volume_dc = VolumeDCActuator(
-            serial=self.serial,
-            actuator_id=1,
-        )
 
     # =================================================
     # Internal worker runner
@@ -124,46 +122,6 @@ class Controller:
         return self._run_worker(["--ocr", f"--camera={camera_index}"], timeout=120)
 
     # =================================================
-    # Motor test (subprocess)
-    # =================================================
-    def motor_test(self, direction: int, strength: int, duration_ms: int) -> WorkerResult:
-        return self._run_worker(
-            [
-                "--motor-test",
-                f"--direction={direction}",
-                f"--strength={strength}",
-                f"--duration={duration_ms}",
-            ],
-            timeout=30,
-        )
-
-    def motor_stop(self):
-        return self.motor_test(0, 0, 1)
-
-    # =================================================
-    # Run-to-target (long process)
-    # =================================================
-    def start_run_to_target(self, target: int, camera_index: int = 0) -> None:
-        self.stop_run_to_target()
-
-        cmd = [
-            "conda", "run", "-n", self.conda_env,
-            "python", self.worker_path,
-            "--run-target",
-            f"--target={target}",
-            f"--camera={camera_index}",
-        ]
-        self.long_proc = subprocess.Popen(cmd, cwd=self.root_dir)
-
-    def stop_run_to_target(self) -> None:
-        if self.long_proc and self.long_proc.poll() is None:
-            try:
-                self.long_proc.terminate()
-            except Exception:
-                pass
-        self.long_proc = None
-
-    # =================================================
     # Linear actuator (subprocess)
     # =================================================
     def linear_move(self, actuator_id: int, position: int) -> WorkerResult:
@@ -197,3 +155,26 @@ class Controller:
             ],
             timeout=20,
         )
+
+    # =================================================
+    # Run-to-target (long process)
+    # =================================================
+    def start_run_to_target(self, target: int, camera_index: int = 0) -> None:
+        self.stop_run_to_target()
+
+        cmd = [
+            "conda", "run", "-n", self.conda_env,
+            "python", self.worker_path,
+            "--run-target",
+            f"--target={target}",
+            f"--camera={camera_index}",
+        ]
+        self.long_proc = subprocess.Popen(cmd, cwd=self.root_dir)
+
+    def stop_run_to_target(self) -> None:
+        if self.long_proc and self.long_proc.poll() is None:
+            try:
+                self.long_proc.terminate()
+            except Exception:
+                pass
+        self.long_proc = None
