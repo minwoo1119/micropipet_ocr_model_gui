@@ -204,3 +204,7 @@ class SerialController:
         self._send(
             MakePacket.pipette_change_volume(actuator_id, 0, 0)
         )
+
+    def send_mightyzap_force_onoff(self, actuator_id: int, onoff: int):
+        self._send(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
+
