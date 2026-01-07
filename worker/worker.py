@@ -61,6 +61,18 @@ def main():
     # -------------------------------------------------
     ap.add_argument("--linear-force-on", action="store_true")
 
+    # -------------------------------------------------
+    # for test
+    # -------------------------------------------------
+    
+    ap.add_argument("--mz-test", action="store_true")
+    ap.add_argument("--mz-speed", type=int, default=500)
+    ap.add_argument("--mz-current", type=int, default=300)
+    ap.add_argument("--mz-position", type=int, default=2000)
+
+
+
+
     args = ap.parse_args()
 
     ensure_state_dir()
@@ -247,6 +259,40 @@ def main():
 
         print(json.dumps({"ok": True}))
         return
+    
+    if args.mz_test:
+        ser = SerialController()
+        if not ser.connect():
+            print(json.dumps({"ok": False, "error": "serial connect failed"}))
+            return
+
+        try:
+            actuator_id = args.actuator_id if args.actuator_id is not None else 0x0B
+
+            # 테스트 순서 (중요)
+            ser.send_mightyzap_set_speed(actuator_id, args.mz_speed)
+            time.sleep(0.1)
+
+            ser.send_mightyzap_set_current(actuator_id, args.mz_current)
+            time.sleep(0.1)
+
+            ser.send_mightyzap_force_onoff(actuator_id, 1)
+            time.sleep(0.1)
+
+            ser.send_mightyzap_set_position(actuator_id, args.mz_position)
+            time.sleep(0.2)
+
+        finally:
+            ser.close()
+
+        print(json.dumps({
+            "ok": True,
+            "speed": args.mz_speed,
+            "current": args.mz_current,
+            "position": args.mz_position,
+        }))
+        return
+
 
     # -------------------------------------------------
     # No action
