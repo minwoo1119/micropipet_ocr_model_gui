@@ -1,121 +1,155 @@
 from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-    QSlider,
-    QGroupBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QPushButton, QLineEdit, QGroupBox, QMessageBox
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 
 from gui.controller import Controller
+from worker.actuator_volume_dc import VolumeDCActuator
 
 
 class PipettePanel(QWidget):
     """
-    Pipette DC motor panel
-    C# GUI 구조 1:1 대응
-    (VolumeDCActuator API 기준)
+    C# Form1 Pipette / End-Effector FULL panel (1:1 대응)
     """
-
-    TIMER_MS = 50  # C# DispatcherTimer 주기
 
     def __init__(self, controller: Controller, parent=None):
         super().__init__(parent)
 
         self.controller = controller
-        self.volume_dc = controller.volume_dc
 
-        self.duty = 40
-        self.direction = None  # 1 or 0 or None
-
-        self.timer = QTimer(self)
-        self.timer.setInterval(self.TIMER_MS)
-        self.timer.timeout.connect(self._on_timer)
+        # ===== Volume Rotary DC motor =====
+        # actuator_id = C#에서 쓰던 ID 그대로
+        self.volume_dc = VolumeDCActuator(
+            serial=self.controller.serial,
+            actuator_id=0xA1,
+        )
 
         self._build_ui()
 
-    # -------------------------------------------------
+    # ==========================================================
     # UI
-    # -------------------------------------------------
+    # ==========================================================
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        main = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("<b>Pipette Control (C# identical)</b>"))
+        main.addWidget(QLabel("<b>Pipette / End-Effector Control</b>"))
 
-        # =====================
-        # Duty
-        # =====================
-        duty_box = QGroupBox("Duty (%)")
-        duty_layout = QVBoxLayout(duty_box)
+        # ======================================================
+        # Linear Down Control (흡인/팁/볼륨 하강)
+        # ======================================================
+        down_box = QGroupBox("Linear Motor - Down")
+        down_layout = QHBoxLayout(down_box)
 
-        self.duty_slider = QSlider(Qt.Horizontal)
-        self.duty_slider.setRange(0, 100)
-        self.duty_slider.setValue(self.duty)
-        self.duty_slider.valueChanged.connect(self._on_duty_change)
+        btn_pip_down = QPushButton("흡인분주 하강")
+        btn_pip_down.clicked.connect(self.controller.pipetting_down)
 
-        self.duty_label = QLabel(f"{self.duty} %")
+        btn_tip_down = QPushButton("팁 교체 하강")
+        btn_tip_down.clicked.connect(self.controller.tip_change_down)
 
-        duty_layout.addWidget(self.duty_slider)
-        duty_layout.addWidget(self.duty_label)
+        btn_vol_down = QPushButton("용량 조절 하강")
+        btn_vol_down.clicked.connect(
+            lambda: self.controller.linear_move(actuator_id=0x0A, position=0)
+        )
 
-        layout.addWidget(duty_box)
+        down_layout.addWidget(btn_pip_down)
+        down_layout.addWidget(btn_tip_down)
+        down_layout.addWidget(btn_vol_down)
 
-        # =====================
-        # Control buttons
-        # =====================
-        ctrl_box = QGroupBox("Pipette")
-        ctrl_layout = QVBoxLayout(ctrl_box)
+        main.addWidget(down_box)
 
-        btn_asp = QPushButton("Aspirate (Hold)")
-        btn_disp = QPushButton("Dispense (Hold)")
+        # ======================================================
+        # Linear Move (목표 위치 이동)
+        # ======================================================
+        move_box = QGroupBox("Linear Motor - Move To Position")
+        grid = QGridLayout(move_box)
 
-        btn_asp.pressed.connect(lambda: self._start(1))
-        btn_asp.released.connect(self._stop)
+        self.tb_pip_pos = QLineEdit()
+        self.tb_tip_pos = QLineEdit()
+        self.tb_vol_pos = QLineEdit()
 
-        btn_disp.pressed.connect(lambda: self._start(0))
-        btn_disp.released.connect(self._stop)
+        grid.addWidget(QLabel("흡인분주 목표"), 0, 0)
+        grid.addWidget(self.tb_pip_pos, 0, 1)
+        grid.addWidget(
+            self._btn("흡인분주 이동",
+                      lambda: self._linear_move(0x08, self.tb_pip_pos)),
+            0, 2
+        )
 
-        ctrl_layout.addWidget(btn_asp)
-        ctrl_layout.addWidget(btn_disp)
+        grid.addWidget(QLabel("팁 교체 목표"), 1, 0)
+        grid.addWidget(self.tb_tip_pos, 1, 1)
+        grid.addWidget(
+            self._btn("팁 교체 이동",
+                      lambda: self._linear_move(0x09, self.tb_tip_pos)),
+            1, 2
+        )
 
-        layout.addWidget(ctrl_box)
+        grid.addWidget(QLabel("용량 조절 목표"), 2, 0)
+        grid.addWidget(self.tb_vol_pos, 2, 1)
+        grid.addWidget(
+            self._btn("용량 조절 이동",
+                      lambda: self._linear_move(0x0A, self.tb_vol_pos)),
+            2, 2
+        )
 
-        # =====================
-        # STOP
-        # =====================
-        btn_stop = QPushButton("STOP")
-        btn_stop.setStyleSheet("background-color:red;color:white;")
-        btn_stop.clicked.connect(self._stop)
-        layout.addWidget(btn_stop)
+        main.addWidget(move_box)
 
-        layout.addStretch(1)
+        # ======================================================
+        # Rotary Volume Control (중공축 모터)
+        # ======================================================
+        rotary_box = QGroupBox("Volume Rotary Motor")
+        rotary_layout = QVBoxLayout(rotary_box)
 
-    # -------------------------------------------------
-    # Logic (C# identical)
-    # -------------------------------------------------
-    def _on_duty_change(self, value: int):
-        self.duty = value
-        self.duty_label.setText(f"{value} %")
+        duty_layout = QHBoxLayout()
+        duty_layout.addWidget(QLabel("Duty"))
+        self.tb_duty = QLineEdit("40")
+        duty_layout.addWidget(self.tb_duty)
 
-    def _start(self, direction: int):
-        self.direction = direction
-        if not self.timer.isActive():
-            self.timer.start()
+        rotary_layout.addLayout(duty_layout)
 
-    def _stop(self):
-        self.timer.stop()
-        self.direction = None
-        self.volume_dc.stop()
+        btn_row = QHBoxLayout()
 
-    def _on_timer(self):
-        """
-        50ms마다 동일 명령 반복 송신
-        """
-        if self.direction is None:
-            return
+        btn_cw = QPushButton("CW")
+        btn_cw.clicked.connect(lambda: self._rotary_run(direction=1))
 
-        if self.direction == 1:
-            self.volume_dc.increase(self.duty)
-        else:
-            self.volume_dc.decrease(self.duty)
+        btn_stop = QPushButton("정지")
+        btn_stop.clicked.connect(self.volume_dc.stop)
+
+        btn_ccw = QPushButton("CCW")
+        btn_ccw.clicked.connect(lambda: self._rotary_run(direction=0))
+
+        btn_row.addWidget(btn_cw)
+        btn_row.addWidget(btn_stop)
+        btn_row.addWidget(btn_ccw)
+
+        rotary_layout.addLayout(btn_row)
+
+        main.addWidget(rotary_box)
+
+        main.addStretch(1)
+
+    # ==========================================================
+    # Helpers
+    # ==========================================================
+    def _btn(self, text, cb):
+        b = QPushButton(text)
+        b.clicked.connect(cb)
+        return b
+
+    def _linear_move(self, actuator_id: int, edit: QLineEdit):
+        try:
+            pos = int(edit.text())
+            self.controller.linear_move(actuator_id, pos)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+
+    def _rotary_run(self, direction: int):
+        try:
+            duty = int(self.tb_duty.text())
+            self.volume_dc.run_for(
+                direction=direction,
+                duty=duty,
+                duration_ms=500,  # C# transmitTimer 개념 대응
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
