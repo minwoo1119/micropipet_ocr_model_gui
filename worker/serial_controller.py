@@ -29,6 +29,11 @@ class SerialController:
         # ===== C# 대응 제어 구조 =====
         self.tx_queue: queue.Queue[bytes] = queue.Queue()
         self.running: bool = False
+        self._poll_step: int = 0
+        self._last_enq: float = 0.0
+        self._min_gap_sec: float = 0.015  # 15ms
+        self._max_queue: int = 3
+
 
     # =========================
     # Connection
@@ -41,6 +46,9 @@ class SerialController:
             port=self.port,
             baudrate=self.baudrate,
             timeout=self.timeout,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
         )
 
         time.sleep(0.5)  # MCU boot / buffer settle
@@ -95,36 +103,70 @@ class SerialController:
         C# Thread.Sleep(50) 송신 루프 대응
         """
         while self.running:
+            # ⚠️ C#과 동일하게: "50ms마다 1번"만 시도
             try:
-                packet = self.tx_queue.get(timeout=0.05)
-
-                if self.ser and self.ser.is_open:
-                    self.ser.write(packet)
-                    self.ser.flush()
-                    print(f"[TX] {packet.hex(' ')}")
-
+                packet = self.tx_queue.get_nowait()
             except queue.Empty:
-                pass
-            except Exception as e:
-                print("[TX ERROR]", e)
+                packet = None
 
-            time.sleep(0.05)  # ★ 핵심
+            if packet is not None:
+                try:
+                    if self.ser and self.ser.is_open:
+                        # flush()는 일부 환경에서 지연을 크게 만들어서 제거
+                        self.ser.write(packet)
+                        print(f"[TX] {packet.hex(' ')}")
+                except Exception as e:
+                    print("[TX ERROR]", e)
+
+            time.sleep(0.05)  # ★ 50ms 고정
+
 
     # =========================
     # Status Worker (keep-alive)
     # =========================
     def _status_worker(self):
         """
-        C#에서 주기적으로 보내던 상태 체크 패킷
+        C# mightyZap_Data_Tick 로직 대응:
+        - 큐가 쌓이면 더 생산하지 않음
+        - 최소 간격 보장
+        - 한 번에 딱 1개만 넣는 라운드로빈
         """
         while self.running:
             try:
-                pkt = MakePacket.get_moving(self.device_id)
-                self.tx_queue.put(pkt)
+                if not (self.ser and self.ser.is_open):
+                    time.sleep(0.2)
+                    continue
+
+                # 1) 큐가 쌓이면 더 생산하지 않음 (지연 누적 방지)
+                if self.tx_queue.qsize() >= self._max_queue:
+                    time.sleep(0.02)
+                    continue
+
+                # 2) 너무 빠른 루프면 최소 간격 보장
+                now = time.time()
+                if now - self._last_enq < self._min_gap_sec:
+                    time.sleep(0.01)
+                    continue
+
+                # 3) 한 번에 "딱 1개"만 넣기 (라운드로빈)
+                if self._poll_step == 0:
+                    pkt = MakePacket.request_check_operate_status()
+                    self.tx_queue.put(pkt)
+                elif self._poll_step == 1:
+                    # 필요 시: selected actuator feedback 폴링 추가 가능
+                    pass
+                elif self._poll_step == 2:
+                    # 필요 시: myactuator angle 폴링 추가 가능
+                    pass
+
+                self._poll_step = (self._poll_step + 1) % 3
+                self._last_enq = now
+
             except Exception as e:
                 print("[STATUS ERROR]", e)
 
-            time.sleep(0.2)  # 200ms 주기
+            time.sleep(0.05)
+
 
     # =========================
     # MightyZap Linear Actuator

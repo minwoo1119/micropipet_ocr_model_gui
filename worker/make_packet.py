@@ -15,6 +15,9 @@ class MakePacket:
     MIGHTYZAP_SetForceOnOff     = 0x04
     MIGHTYZAP_GetMovingState    = 0x05
     MIGHTYZAP_GetFeedbackData   = 0x07
+    MyActuator_setAbsoluteAngle = 0xA4
+    MyActuator_getAbsoluteAngle = 0x92
+    GearedDC_changePipetteVolume = 0xA1
 
     # ==============================
     # 내부 공통 함수
@@ -108,6 +111,28 @@ class MakePacket:
             MakePacket.MIGHTYZAP_GetFeedbackData,
             []
         )
+        
+    # ==============================
+    # C# REQUSET_Check_Operate_Status()
+    # ==============================
+    @staticmethod
+    def request_check_operate_status() -> bytes:
+        packet = bytearray(13)
+        packet[0] = MakePacket.HEADER1
+        packet[1] = MakePacket.HEADER2
+        packet[2] = 0xFF
+        packet[3] = 0x07
+        packet[4] = 0x01
+        packet[5] = 0x02
+        packet[6] = 0x03
+        packet[7] = 0x04
+        packet[8] = 0x05
+        packet[9] = 0x06
+        packet[10] = 0x07
+        packet[11] = MakePacket._checksum(packet)
+        packet[12] = MakePacket.ENDOFBYTE
+        return bytes(packet)
+
 
     # ==============================
     # MyActuator
@@ -149,10 +174,14 @@ class MakePacket:
     # ==============================
     @staticmethod
     def pipette_change_volume(id_: int, direction: int, duty: int) -> bytes:
-        
-        duty_hex_encoded = int(f"{duty}", 16) & 0xFF
+        """
+        duty는 '16진수로 해석될 값' (C# byte.Parse(duty.ToString(), Hex))
+        예: duty=30 → 0x30
+        """
+        duty_hex_encoded = int(str(duty), 16) & 0xFF
         return MakePacket._base_packet(
             id_,
-            0xA1,
-            [direction, duty_hex_encoded]
+            MakePacket.GearedDC_changePipetteVolume,
+            [direction & 0xFF, duty_hex_encoded]
         )
+
