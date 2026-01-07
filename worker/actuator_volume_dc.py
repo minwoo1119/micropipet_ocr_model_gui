@@ -17,14 +17,14 @@ class VolumeDCActuator:
         self.actuator_id = actuator_id
 
     # -------------------------------------------------
-    # Basic motions
+    # Basic motions (START only)
     # -------------------------------------------------
     def increase(self, duty: int):
         """
         Volume UP (CW in CEO UI)
+        dir = 1
         """
-        # C# 기준: dir = 1
-        self.serial.send_volume_dc(
+        self.serial.send_pipette_change_volume(
             actuator_id=self.actuator_id,
             direction=1,
             duty=duty,
@@ -33,9 +33,9 @@ class VolumeDCActuator:
     def decrease(self, duty: int):
         """
         Volume DOWN (CCW in CEO UI)
+        dir = 0
         """
-        # C# 기준: dir = 0
-        self.serial.send_volume_dc(
+        self.serial.send_pipette_change_volume(
             actuator_id=self.actuator_id,
             direction=0,
             duty=duty,
@@ -43,25 +43,26 @@ class VolumeDCActuator:
 
     def stop(self):
         """
-        Stop motor
+        Stop motor (duty = 0)
         """
-        self.serial.send_volume_dc(
-            actuator_id=self.actuator_id,
-            direction=0,
-            duty=0,
-        )
+        self.serial.send_pipette_stop(self.actuator_id)
 
     # -------------------------------------------------
     # Timed helper (Python-side duration control)
     # -------------------------------------------------
     def run_for(self, direction: int, duty: int, duration_ms: int):
         """
-        Run motor for a fixed duration
+        Run motor for a fixed duration (START → wait → STOP)
         """
-        self.serial.send_volume_dc(
+        # START
+        self.serial.send_pipette_change_volume(
             actuator_id=self.actuator_id,
             direction=direction,
             duty=duty,
         )
+
+        # 유지 시간
         time.sleep(duration_ms / 1000.0)
+
+        # STOP
         self.stop()

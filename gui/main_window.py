@@ -6,6 +6,7 @@ from gui.panels.yolo_panel import YoloPanel
 from gui.panels.target_panel import TargetPanel
 from gui.panels.motor_test_panel import MotorTestPanel
 from gui.panels.linear_actuator_panel import LinearActuatorPanel
+from gui.panels.pipette_panel import PipettePanel
 
 
 class MainWindow(QWidget):
@@ -31,6 +32,7 @@ class MainWindow(QWidget):
         right_layout.addWidget(self.target_panel)
         right_layout.addWidget(self.linear_panel)
         right_layout.addWidget(self.motor_test_panel)
+        right_layout.addWidget(self.pipette_panel)
         right_layout.addStretch(1)  # 아래 여백
 
         # ---------- Main layout ----------
