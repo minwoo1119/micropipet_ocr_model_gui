@@ -120,22 +120,3 @@ class PipettePanel(tk.Frame):
             style="Danger.TButton",
         ).grid(row=4, column=0, padx=10, pady=10, sticky="ew")
 
-
-# -------------------------------------------------
-# Optional test runner
-# -------------------------------------------------
-if __name__ == "__main__":
-    from worker.serial_controller import SerialController
-
-    serial = SerialController(port="/dev/ttyUSB0")
-    serial.connect()
-
-    volume_dc = VolumeDCActuator(serial, actuator_id=1)
-
-    root = tk.Tk()
-    root.title("Pipette GUI")
-
-    panel = PipettePanel(root, volume_dc)
-    panel.pack(fill="both", expand=True)
-
-    root.mainloop()

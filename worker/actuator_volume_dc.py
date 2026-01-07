@@ -1,5 +1,6 @@
 import time
 from worker.serial_controller import SerialController
+import threading
 
 
 class VolumeDCActuator:
@@ -51,18 +52,13 @@ class VolumeDCActuator:
     # Timed helper (Python-side duration control)
     # -------------------------------------------------
     def run_for(self, direction: int, duty: int, duration_ms: int):
-        """
-        Run motor for a fixed duration (START → wait → STOP)
-        """
-        # START
-        self.serial.send_pipette_change_volume(
-            actuator_id=self.actuator_id,
-            direction=direction,
-            duty=duty,
-        )
+        def _worker():
+            self.serial.send_pipette_change_volume(
+                actuator_id=self.actuator_id,
+                direction=direction,
+                duty=duty,
+            )
+            time.sleep(duration_ms / 1000.0)
+            self.stop()
 
-        # 유지 시간
-        time.sleep(duration_ms / 1000.0)
-
-        # STOP
-        self.stop()
+        threading.Thread(target=_worker, daemon=True).start()
