@@ -1,4 +1,5 @@
 from worker.serial_controller import SerialController
+import time
 
 
 class LinearActuator:
@@ -30,11 +31,10 @@ class LinearActuator:
     # Core low-level move
     # -------------------------------------------------
     def move_to(self, position: int):
-        return self.serial.move_and_wait(
-            actuator_id=self.actuator_id,
-            position=position,
-            timeout=5.0
-        )
+        self.serial.send_mightyzap_set_position(self.actuator_id, position)
+        time.sleep(0.6)  # 물리 이동 시간
+        return True
+
 
 
     # -------------------------------------------------
