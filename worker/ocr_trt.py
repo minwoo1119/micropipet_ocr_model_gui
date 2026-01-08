@@ -6,14 +6,17 @@ import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit  # noqa
 
+from PIL import Image
+from torchvision import transforms
+
 from worker.paths import OCR_TRT_PATH, ROIS_JSON_PATH
 
 # =============================
 # OCR preprocessing settings (TRAIN/VAL과 동일)
 # =============================
 INPUT_SIZE = (224, 224)
-NORM_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)  # RGB
-NORM_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)  # RGB
+NORM_MEAN = [0.485, 0.456, 0.406]  # RGB
+NORM_STD  = [0.229, 0.224, 0.225]  # RGB
 VOLUME_WEIGHTS = [1000, 100, 10, 1]
 
 
@@ -33,55 +36,37 @@ class TRTWrapper:
         self.context = self.engine.create_execution_context()
         self.stream = cuda.Stream()
 
-        # --- input/output tensor name 잡기 (엔진마다 order가 달라질 수 있어 안전하게) ---
-        # 기본: 0=input, 1=output
         self.input_name = None
         self.output_name = None
 
-        # TensorRT 8/9/10 모두 호환되게: tensor 개수만큼 이름 확인
         n_tensors = self.engine.num_io_tensors
-        input_candidates = []
-        output_candidates = []
-
         for i in range(n_tensors):
             name = self.engine.get_tensor_name(i)
-            mode = self.engine.get_tensor_mode(name)  # trt.TensorIOMode
+            mode = self.engine.get_tensor_mode(name)
             if mode == trt.TensorIOMode.INPUT:
-                input_candidates.append(name)
+                self.input_name = name
             else:
-                output_candidates.append(name)
+                self.output_name = name
 
-        if len(input_candidates) == 0 or len(output_candidates) == 0:
-            # fallback (진짜 특이 케이스)
+        if self.input_name is None or self.output_name is None:
             self.input_name = self.engine.get_tensor_name(0)
             self.output_name = self.engine.get_tensor_name(1)
-        else:
-            # 보통 input 1개, output 1개
-            self.input_name = input_candidates[0]
-            self.output_name = output_candidates[0]
 
     def infer(self, x_nchw: np.ndarray):
-        """
-        x_nchw: (N,C,H,W) float32
-        return: (cls_list, conf_list, prob_array)
-        """
         if x_nchw.dtype != np.float32:
             x_nchw = x_nchw.astype(np.float32)
 
         N, C, H, W = x_nchw.shape
 
-        # dynamic shape 설정
         self.context.set_input_shape(self.input_name, (N, C, H, W))
         out_shape = tuple(self.context.get_tensor_shape(self.output_name))
 
-        # host/device alloc
         host_input = cuda.pagelocked_empty((N, C, H, W), dtype=np.float32)
         host_output = cuda.pagelocked_empty(out_shape, dtype=np.float32)
 
         d_input = cuda.mem_alloc(host_input.nbytes)
         d_output = cuda.mem_alloc(host_output.nbytes)
 
-        # bindings set
         self.context.set_tensor_address(self.input_name, int(d_input))
         self.context.set_tensor_address(self.output_name, int(d_output))
 
@@ -95,7 +80,6 @@ class TRTWrapper:
         d_input.free()
         d_output.free()
 
-        # softmax
         logits = host_output.reshape((N, -1))
         e_x = np.exp(logits - np.max(logits, axis=1, keepdims=True))
         prob = e_x / np.sum(e_x, axis=1, keepdims=True)
@@ -106,27 +90,25 @@ class TRTWrapper:
 
 
 # =========================================================
-# Image preprocessing helpers (학습 val_tf와 1:1)
-# - Resize((224,224)) : 비율 무시
-# - ToTensor()
-# - Normalize(mean,std) : RGB 기준
+# torchvision preprocessing (TRAIN 코드와 100% 동일)
 # =========================================================
-def _preprocess_roi_bgr(roi_bgr: np.ndarray) -> np.ndarray:
-    # 1) BGR -> RGB
+_preprocess = transforms.Compose([
+    transforms.Resize(INPUT_SIZE, antialias=True),
+    transforms.ToTensor(),  # [0,1], CHW
+    transforms.Normalize(mean=NORM_MEAN, std=NORM_STD),
+])
+
+def preprocess_roi_bgr_trt(roi_bgr: np.ndarray) -> np.ndarray:
+    """
+    BGR(OpenCV) → PIL → torchvision → numpy (TRT input)
+    return: (3,224,224) float32
+    """
     rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
 
-    # 2) Resize((224,224))  (비율 유지 X, 학습과 동일)
-    resized = cv2.resize(rgb, INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
-
-    # 3) ToTensor: [0,1], CHW
-    x = resized.astype(np.float32) / 255.0
-    x = np.transpose(x, (2, 0, 1))  # CHW, RGB
-
-    # 4) Normalize: (x-mean)/std
-    # mean/std shape 맞추기: (3,1,1)
-    x = (x - NORM_MEAN[:, None, None]) / NORM_STD[:, None, None]
-
-    return x.astype(np.float32)
+    x = _preprocess(pil)          # torch.Tensor (3,H,W)
+    x = x.numpy().astype(np.float32)
+    return x
 
 
 # =========================================================
@@ -134,7 +116,7 @@ def _preprocess_roi_bgr(roi_bgr: np.ndarray) -> np.ndarray:
 # =========================================================
 def load_rois():
     if not os.path.exists(ROIS_JSON_PATH):
-        raise FileNotFoundError(f"ROIs not found: {ROIS_JSON_PATH} (run YOLO first)")
+        raise FileNotFoundError(f"ROIs not found: {ROIS_JSON_PATH}")
 
     with open(ROIS_JSON_PATH, "r", encoding="utf-8") as f:
         rois = json.load(f)
@@ -146,20 +128,18 @@ def load_rois():
 
 
 # =========================================================
-# Main OCR logic
+# Main OCR logic (TRT)
 # =========================================================
 def read_volume_trt(frame: np.ndarray, trt_model: TRTWrapper) -> int:
     rois = load_rois()
 
-    # 위 -> 아래 정렬 (천/백/십/일)
+    # 위 → 아래 (천/백/십/일)
     rois = sorted(rois, key=lambda r: r[1])
 
     h, w = frame.shape[:2]
     crops = []
 
-    # ROI 4개만 사용 (나머지는 무시)
     for i, (x, y, rw, rh) in enumerate(rois[:4]):
-        # clip to frame
         x1 = max(0, min(w - 1, int(x)))
         y1 = max(0, min(h - 1, int(y)))
         x2 = max(0, min(w, x1 + int(rw)))
@@ -167,28 +147,21 @@ def read_volume_trt(frame: np.ndarray, trt_model: TRTWrapper) -> int:
 
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            raise RuntimeError(f"Empty crop at ROI{i} (x1,y1,x2,y2={x1},{y1},{x2},{y2})")
+            raise RuntimeError(f"Empty ROI{i}")
 
-        # 디버그 저장
-        try:
-            cv2.imwrite(f"/tmp/ocr_roi_{i}.jpg", crop)
-        except Exception:
-            pass
-
+        cv2.imwrite(f"/tmp/ocr_roi_{i}.jpg", crop)
         crops.append(crop)
 
     if len(crops) < 4:
-        raise RuntimeError(f"Not enough ROIs for OCR: {len(crops)} (need 4)")
+        raise RuntimeError("Not enough ROIs")
 
-    batch = np.stack([_preprocess_roi_bgr(c) for c in crops], axis=0).astype(np.float32)
+    batch = np.stack(
+        [preprocess_roi_bgr_trt(c) for c in crops],
+        axis=0
+    ).astype(np.float32)
 
     pred_cls, pred_conf, _ = trt_model.infer(batch)
     digits = [int(d) for d in pred_cls[:4]]
 
-    volume = int(
-        digits[0] * 1000 +
-        digits[1] * 100 +
-        digits[2] * 10 +
-        digits[3]
-    )
+    volume = sum(d * w for d, w in zip(digits, VOLUME_WEIGHTS))
     return volume

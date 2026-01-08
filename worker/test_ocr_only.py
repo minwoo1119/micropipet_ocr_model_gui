@@ -5,136 +5,105 @@ import torch
 import numpy as np
 import timm
 
-from worker.paths import YOLO_MODEL_PATH, FRAME_JPG_PATH
-from worker.camera import capture_one_frame
+from PIL import Image
+from torchvision import transforms
+
+from worker.paths import FRAME_JPG_PATH, ROIS_JSON_PATH
 
 # ==============================
 # CONFIG
 # ==============================
-CAMERA_INDEX = 0
-
 OCR_PT_PATH = "/home/sixr/Desktop/pipet_model/ocr_motor/best_efficientnet_origin.pt"
 NUM_CLASSES = 10
 
+# ==============================
+# Load checkpoint metadata
+# ==============================
+ckpt = torch.load(OCR_PT_PATH, map_location="cpu")
+print("[CKPT keys]", ckpt.keys())
+print("[CKPT classes]", ckpt.get("classes"))
+
 INPUT_SIZE = (224, 224)
-NORM_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-NORM_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
+NORM_MEAN = ckpt.get("norm_mean", [0.485, 0.456, 0.406])
+NORM_STD  = ckpt.get("norm_std",  [0.229, 0.224, 0.225])
 
 # ==============================
-# OCR preprocessing (TRAIN/VAL과 동일)
+# Preprocess (TRAIN / VAL과 100% 동일)
 # ==============================
-def preprocess_roi(roi_bgr: np.ndarray) -> np.ndarray:
-    # BGR -> RGB
+preprocess = transforms.Compose([
+    transforms.Resize(INPUT_SIZE, antialias=True),
+    transforms.ToTensor(),                     # [0,1], CHW, RGB
+    transforms.Normalize(NORM_MEAN, NORM_STD),
+])
+
+
+def preprocess_roi(roi_bgr: np.ndarray) -> torch.Tensor:
     rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
-
-    # Resize (비율 무시, 학습과 동일)
-    resized = cv2.resize(rgb, INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
-
-    # ToTensor
-    x = resized.astype(np.float32) / 255.0
-    x = np.transpose(x, (2, 0, 1))  # CHW
-
-    # Normalize
-    x = (x - NORM_MEAN[:, None, None]) / NORM_STD[:, None, None]
-    return x.astype(np.float32)
+    pil = Image.fromarray(rgb)
+    return preprocess(pil)   # (3,224,224) torch.Tensor
 
 
+# ==============================
+# Load OCR model (PT)
+# ==============================
 def load_ocr_model():
     model = timm.create_model(
         "efficientnet_b0",
-        pretrained=False,
+        pretrained=False,     # ✅ 반드시 False
         num_classes=NUM_CLASSES,
     )
 
-    ckpt = torch.load(OCR_PT_PATH, map_location="cpu")
     state_dict = ckpt["model"] if "model" in ckpt else ckpt
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
     return model
 
 
 # ==============================
-# YOLO utils
-# ==============================
-def run_yolo(frame):
-    from ultralytics import YOLO
-
-    model = YOLO(YOLO_MODEL_PATH)
-    results = model(frame, verbose=False)[0]
-
-    rois = []
-    for box in results.boxes.xywh.cpu().numpy():
-        x, y, w, h = box
-        rois.append([
-            int(x - w / 2),
-            int(y - h / 2),
-            int(w),
-            int(h),
-        ])
-
-    # 위 → 아래 정렬 (천/백/십/일)
-    rois = sorted(rois, key=lambda r: r[1])
-    return rois
-
-
-# ==============================
-# MAIN
+# MAIN (OCR ONLY)
 # ==============================
 def main():
-    print("=== YOLO + OCR ONE SHOT (PT, PREVIEW) ===")
+    print("=== OCR ONLY (FROM SAVED FILES, PT) ===")
 
     # ---------------------------------
-    # 1. Capture frame
+    # 1. Load image
     # ---------------------------------
-    frame = capture_one_frame(CAMERA_INDEX)
-    cv2.imwrite(FRAME_JPG_PATH, frame)
+    assert os.path.exists(FRAME_JPG_PATH), f"Image not found: {FRAME_JPG_PATH}"
+    frame = cv2.imread(FRAME_JPG_PATH)
     h, w = frame.shape[:2]
 
     # ---------------------------------
-    # 2. YOLO detect
+    # 2. Load ROIs
     # ---------------------------------
-    rois = run_yolo(frame)
-    print(f"[YOLO] detected {len(rois)} boxes")
+    assert os.path.exists(ROIS_JSON_PATH), f"ROIs not found: {ROIS_JSON_PATH}"
+    with open(ROIS_JSON_PATH, "r") as f:
+        rois = json.load(f)
+
+    rois = sorted(rois, key=lambda r: r[1])  # top → bottom
+    print(f"[INFO] Loaded {len(rois)} ROIs")
 
     # ---------------------------------
-    # 3. Draw YOLO preview
-    # ---------------------------------
-    preview = frame.copy()
-    for i, (x, y, rw, rh) in enumerate(rois):
-        cv2.rectangle(preview, (x, y), (x+rw, y+rh), (0, 255, 0), 2)
-        cv2.putText(
-            preview, f"ROI{i}",
-            (x, max(0, y-10)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7, (0, 255, 0), 2
-        )
-
-    cv2.imshow("YOLO ROI Preview", preview)
-
-    # ---------------------------------
-    # 4. OCR inference (PT)
+    # 3. OCR
     # ---------------------------------
     model = load_ocr_model()
     digits = []
 
     for i, (x, y, rw, rh) in enumerate(rois[:4]):
-        x1 = max(0, min(w - 1, x))
-        y1 = max(0, min(h - 1, y))
-        x2 = max(0, min(w, x1 + rw))
-        y2 = max(0, min(h, y1 + rh))
+        x1 = max(0, min(w - 1, int(x)))
+        y1 = max(0, min(h - 1, int(y)))
+        x2 = max(0, min(w, x1 + int(rw)))
+        y2 = max(0, min(h, y1 + int(rh)))
 
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             print(f"[WARN] ROI{i} empty")
             continue
 
-        # 디버그 저장
-        cv2.imwrite(f"/tmp/ocr_pt_roi_{i}.jpg", crop)
+        # debug save
+        cv2.imwrite(f"/tmp/ocr_roi_{i}.jpg", crop)
         cv2.imshow(f"OCR ROI {i}", crop)
 
-        x_in = preprocess_roi(crop)
-        x_in = torch.from_numpy(x_in).unsqueeze(0)
+        x_in = preprocess_roi(crop).unsqueeze(0)  # (1,3,224,224)
 
         with torch.no_grad():
             logits = model(x_in)
@@ -146,7 +115,7 @@ def main():
         print(f"ROI{i}: digit={pred}, conf={conf:.3f}")
 
     # ---------------------------------
-    # 5. Volume 계산
+    # 4. Volume
     # ---------------------------------
     if len(digits) == 4:
         volume = digits[0]*1000 + digits[1]*100 + digits[2]*10 + digits[3]
@@ -154,7 +123,6 @@ def main():
     else:
         print("\n[VOLUME] skipped (ROI count != 4)")
 
-    print("\nPress any key to close windows.")
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
