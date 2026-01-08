@@ -1,6 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 
-from worker.serial_controller import SerialController
 from gui.controller import Controller
 from gui.panels.video_panel import VideoPanel
 from gui.panels.yolo_panel import YoloPanel
@@ -18,18 +17,9 @@ class MainWindow(QWidget):
         self.resize(1100, 1050)
 
         # ===============================
-        # ✅ SerialController 단 1회 생성
+        # ✅ Controller만 생성 (정상)
         # ===============================
-        self.serial = SerialController(
-            port="/dev/ttyUSB0",
-            baudrate=115200,
-        )
-        self.serial.connect()
-
-        # ===============================
-        # ✅ Controller에 serial 주입
-        # ===============================
-        self.controller = Controller(self.serial)
+        self.controller = Controller(conda_env="pipet_env")
 
         # ---------- Panels ----------
         self.video_panel = VideoPanel(self.controller)
@@ -55,9 +45,9 @@ class MainWindow(QWidget):
         self.setLayout(main_layout)
 
     def closeEvent(self, event):
-        """GUI 종료 시 시리얼 정리"""
+        """GUI 종료 시 컨트롤러 정리"""
         try:
-            self.serial.close()
+            self.controller.close()
         except Exception:
             pass
         event.accept()

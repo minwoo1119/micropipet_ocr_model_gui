@@ -114,13 +114,23 @@ class Controller:
         args: List[str],
         timeout: Optional[int] = 120,
     ) -> WorkerResult:
+
+        safe_args: List[str] = []
+        for a in args:
+            if not isinstance(a, str):
+                raise TypeError(
+                    f"_run_worker args must be str, got {type(a)} : {a}"
+                )
+            safe_args.append(a)
+
         cmd = [
             "conda", "run", "-n", self.conda_env,
             "python", "-m", "worker.worker",
-        ] + args
+        ] + safe_args
 
         print("\n[Controller] Running worker command:")
         print(" ".join(cmd))
+
 
         p = subprocess.run(
             cmd,

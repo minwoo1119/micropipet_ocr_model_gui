@@ -6,12 +6,12 @@ import numpy as np
 import timm
 
 from worker.paths import YOLO_MODEL_PATH, FRAME_JPG_PATH
+from worker.camera import capture_one_frame
 
 # ==============================
 # CONFIG
 # ==============================
 CAMERA_INDEX = 0
-FRAME_SIZE = (1280, 800)
 
 OCR_PT_PATH = "/home/sixr/Desktop/pipet_model/ocr_motor/best_efficientnet_origin.pt"
 NUM_CLASSES = 10
@@ -22,25 +22,22 @@ NORM_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 # ==============================
-# OCR utils
+# OCR preprocessing (TRAIN/VAL과 동일)
 # ==============================
-def pad_to_square(img: np.ndarray) -> np.ndarray:
-    h, w = img.shape[:2]
-    size = max(h, w)
-    canvas = np.zeros((size, size, 3), dtype=img.dtype)
-    y_offset = (size - h) // 2
-    x_offset = (size - w) // 2
-    canvas[y_offset:y_offset + h, x_offset:x_offset + w] = img
-    return canvas
-
-
 def preprocess_roi(roi_bgr: np.ndarray) -> np.ndarray:
+    # BGR -> RGB
     rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
+
+    # Resize (비율 무시, 학습과 동일)
     resized = cv2.resize(rgb, INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
+
+    # ToTensor
     x = resized.astype(np.float32) / 255.0
-    x = (x - NORM_MEAN) / NORM_STD
     x = np.transpose(x, (2, 0, 1))  # CHW
-    return x
+
+    # Normalize
+    x = (x - NORM_MEAN[:, None, None]) / NORM_STD[:, None, None]
+    return x.astype(np.float32)
 
 
 def load_ocr_model():
@@ -76,7 +73,7 @@ def run_yolo(frame):
             int(h),
         ])
 
-    # 위 → 아래 정렬
+    # 위 → 아래 정렬 (천/백/십/일)
     rois = sorted(rois, key=lambda r: r[1])
     return rois
 
@@ -85,14 +82,12 @@ def run_yolo(frame):
 # MAIN
 # ==============================
 def main():
-    print("=== YOLO + OCR ONE SHOT (PREVIEW) ===")
+    print("=== YOLO + OCR ONE SHOT (PT, PREVIEW) ===")
 
     # ---------------------------------
     # 1. Capture frame
     # ---------------------------------
-    from worker.camera import capture_one_frame
     frame = capture_one_frame(CAMERA_INDEX)
-
     cv2.imwrite(FRAME_JPG_PATH, frame)
     h, w = frame.shape[:2]
 
@@ -100,7 +95,6 @@ def main():
     # 2. YOLO detect
     # ---------------------------------
     rois = run_yolo(frame)
-
     print(f"[YOLO] detected {len(rois)} boxes")
 
     # ---------------------------------
@@ -111,7 +105,7 @@ def main():
         cv2.rectangle(preview, (x, y), (x+rw, y+rh), (0, 255, 0), 2)
         cv2.putText(
             preview, f"ROI{i}",
-            (x, y-10),
+            (x, max(0, y-10)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7, (0, 255, 0), 2
         )
@@ -123,21 +117,24 @@ def main():
     # ---------------------------------
     model = load_ocr_model()
     digits = []
-    ocr_results = []
 
-    for i, (x, y, rw, rh) in enumerate(rois):
-        x = max(0, min(w - 1, x))
-        y = max(0, min(h - 1, y))
-        crop = frame[y:y+rh, x:x+rw]
+    for i, (x, y, rw, rh) in enumerate(rois[:4]):
+        x1 = max(0, min(w - 1, x))
+        y1 = max(0, min(h - 1, y))
+        x2 = max(0, min(w, x1 + rw))
+        y2 = max(0, min(h, y1 + rh))
 
+        crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             print(f"[WARN] ROI{i} empty")
             continue
 
+        # 디버그 저장
+        cv2.imwrite(f"/tmp/ocr_pt_roi_{i}.jpg", crop)
         cv2.imshow(f"OCR ROI {i}", crop)
 
         x_in = preprocess_roi(crop)
-        x_in = torch.from_numpy(x_in).unsqueeze(0).float()
+        x_in = torch.from_numpy(x_in).unsqueeze(0)
 
         with torch.no_grad():
             logits = model(x_in)
@@ -146,20 +143,13 @@ def main():
             conf = float(prob.max(dim=1).values)
 
         digits.append(pred)
-        ocr_results.append((pred, conf))
-
         print(f"ROI{i}: digit={pred}, conf={conf:.3f}")
 
     # ---------------------------------
-    # 5. Volume 계산 (가능할 때만)
+    # 5. Volume 계산
     # ---------------------------------
     if len(digits) == 4:
-        volume = (
-            digits[0] * 1000 +
-            digits[1] * 100 +
-            digits[2] * 10 +
-            digits[3]
-        )
+        volume = digits[0]*1000 + digits[1]*100 + digits[2]*10 + digits[3]
         print(f"\n[VOLUME] {volume}")
     else:
         print("\n[VOLUME] skipped (ROI count != 4)")
