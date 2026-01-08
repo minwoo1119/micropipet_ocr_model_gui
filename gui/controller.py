@@ -176,11 +176,11 @@ class Controller:
         )
 
     # =================================================
-    # Linear actuator (🔥 GUI에서 직접 제어)
+    # Linear actuator (GUI에서 직접 제어)
     # =================================================
     # ---- 흡인분주 (0x0B) ----
     def pipetting_down(self):
-        self.pipetting_linear.move_to(300)
+        self.pipetting_linear.move_to(900)
         self._pipetting_down = True
 
     def pipetting_up(self):
@@ -198,7 +198,7 @@ class Controller:
 
     # ---- 용량 조절 리니어 (0x0A) ----
     def volume_down(self):
-        self.volume_linear.move_to(300)
+        self.volume_linear.move_to(900)
         self._volume_down = True
 
     def volume_up(self):
