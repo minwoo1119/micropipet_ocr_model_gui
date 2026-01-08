@@ -30,13 +30,12 @@ class LinearActuator:
     # Core low-level move
     # -------------------------------------------------
     def move_to(self, position: int):
-        """
-        Move linear actuator to absolute position
-        """
-        self.serial.send_mightyzap_set_position(
+        return self.serial.move_and_wait(
             actuator_id=self.actuator_id,
             position=position,
+            timeout=5.0
         )
+
 
     # -------------------------------------------------
     # Pipetting (흡인 / 분주)

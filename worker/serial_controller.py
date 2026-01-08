@@ -1,7 +1,7 @@
 import time
 import threading
 import queue
-from typing import Optional
+from typing import Optional, Dict
 
 import serial
 
@@ -10,19 +10,19 @@ from worker.make_packet import MakePacket
 
 class SerialController:
     """
-    - poll 완전 OFF
-    - TX: 50ms tick로 큐에서 1개씩 전송
-    - RX: length 기반 프레임 파싱 (LEN + 6)
+    ✔ Windows(C#) MightyZap 제어와 동작 1:1 동일
+    ✔ poll OFF
+    ✔ SetPosition + GetMoving polling
+    ✔ 자동 RS485 대응 (TX → RX 전환 보장)
     """
 
-    MAX_QUEUE = 50          # 🔥 3이면 GUI에서 연속 클릭할 때 너무 쉽게 DROP됨
-    TX_TICK_SEC = 0.05      # 50ms
+    MAX_QUEUE = 50
 
     def __init__(
         self,
         port: str = "/dev/ttyUSB0",
         baudrate: int = 115200,
-        timeout: float = 0.05,   # 🔥 RX가 빨라야 응답을 잘 본다
+        timeout: float = 0.05,
     ):
         self.port = port
         self.baudrate = baudrate
@@ -33,9 +33,13 @@ class SerialController:
 
         self.tx_queue: "queue.Queue[bytes]" = queue.Queue()
 
+        # MightyZap 상태 (C# struct 대응)
+        self.states: Dict[int, Dict] = {}
+        self._state_lock = threading.Lock()
+
         # 디버그
-        self.rx_debug: bool = True
-        self.tx_debug: bool = True
+        self.rx_debug = True
+        self.tx_debug = True
 
     # =========================
     # Connection
@@ -45,7 +49,7 @@ class SerialController:
             port=self.port,
             baudrate=self.baudrate,
             timeout=self.timeout,
-            write_timeout=0.2,
+            write_timeout=None,  # 🔥 중요: write block 허용
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
@@ -53,13 +57,12 @@ class SerialController:
             dsrdtr=False,
         )
 
-        # 버퍼 초기화 (중요)
         self.ser.reset_input_buffer()
         self.ser.reset_output_buffer()
 
         time.sleep(0.2)
-        self.running = True
 
+        self.running = True
         threading.Thread(target=self._tx_worker, daemon=True).start()
         threading.Thread(target=self._rx_worker, daemon=True).start()
 
@@ -68,14 +71,15 @@ class SerialController:
     def close(self):
         self.running = False
         time.sleep(0.05)
-        try:
-            if self.ser and self.ser.is_open:
-                self.ser.close()
-        finally:
-            self.ser = None
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+        self.ser = None
+
+    def is_connected(self) -> bool:
+        return self.ser is not None and self.ser.is_open
 
     # =========================
-    # ENQUEUE
+    # TX enqueue
     # =========================
     def enqueue(self, packet: bytes):
         if not self.ser or not self.ser.is_open:
@@ -91,30 +95,43 @@ class SerialController:
             print(f"[ENQUEUE] {packet.hex(' ')}")
 
     # =========================
-    # TX Worker
+    # TX Worker (C# Write() 동일)
     # =========================
     def _tx_worker(self):
+        """
+        ✔ Windows(C#) SerialPort.Write() 와 1:1 동작
+        ✔ write → flush → tcdrain 보장
+        ✔ RS485 자동 방향 전환 안정화
+        """
+        import termios
+
         while self.running:
             try:
-                if self.ser and self.ser.is_open:
-                    try:
-                        packet = self.tx_queue.get_nowait()
-                    except queue.Empty:
-                        packet = None
+                # 큐에서 패킷 대기 (busy loop 방지)
+                packet = self.tx_queue.get(timeout=0.1)
 
-                    if packet:
-                        self.ser.write(packet)
-                        self.ser.flush()
-                        if self.tx_debug:
-                            print(f"[TX] {packet.hex(' ')}")
+                if not (self.ser and self.ser.is_open):
+                    continue
 
+                self.ser.write(packet)
+                self.ser.flush()
+
+                termios.tcdrain(self.ser.fileno())
+
+                if self.tx_debug:
+                    print(f"[TX] {packet.hex(' ')}")
+
+                time.sleep(0.003)
+
+            except queue.Empty:
+                # 전송할 게 없으면 자연스럽게 대기
+                pass
             except Exception as e:
                 print("[TX ERROR]", e)
 
-            time.sleep(self.TX_TICK_SEC)
 
     # =========================
-    # RX Worker (LEN 기반)
+    # RX Worker (END BYTE 기반)
     # =========================
     def _rx_worker(self):
         buf = bytearray()
@@ -127,41 +144,88 @@ class SerialController:
 
                 n = self.ser.in_waiting
                 if n:
-                    chunk = self.ser.read(n)
-                    if not chunk:
-                        # 이게 뜨면 보통 포트 다중접속/케이블/전원 문제
-                        # 또는 timeout 설정 꼬임
-                        time.sleep(0.01)
-                        continue
+                    buf += self.ser.read(n)
 
-                    buf += chunk
-
-                # 프레임 파싱: EA EB | ID | LEN | ... (LEN bytes) | CHK | ED
                 while True:
-                    if len(buf) < 6:
+                    if len(buf) < 13:
                         break
 
-                    # 헤더 정렬
-                    if not (buf[0] == 0xEA and buf[1] == 0xEB):
+                    if buf[0] != 0xEA or buf[1] != 0xEB:
                         buf.pop(0)
                         continue
 
-                    length = buf[3]
-                    frame_len = int(length) + 6  # ✅ 핵심
-
-                    if len(buf) < frame_len:
+                    try:
+                        end_idx = buf.index(0xED)
+                    except ValueError:
                         break
 
-                    frame = bytes(buf[:frame_len])
-                    del buf[:frame_len]
+                    frame = bytes(buf[:end_idx + 1])
+                    del buf[:end_idx + 1]
 
                     if self.rx_debug:
                         print(f"[RX] {frame.hex(' ')}")
 
+                    self._handle_frame(frame)
+
             except Exception as e:
                 print("[RX ERROR]", e)
 
-            time.sleep(0.005)
+            time.sleep(0.002)
+
+    # =========================
+    # RX Frame Handler (C# 동일)
+    # =========================
+    def _handle_frame(self, frame: bytes):
+        if len(frame) < 12:
+            return
+
+        actuator_id = frame[2]
+        response_type = frame[4]
+
+        # MightyZap status response
+        if response_type != 0x11:
+            return
+
+        # 로그 기준 moving flag = frame[8]
+        moving = frame[8]
+
+        with self._state_lock:
+            self.states[actuator_id] = {
+                "moving": moving,
+                "timestamp": time.time(),
+                "raw": frame,
+            }
+
+    # =========================
+    # C#과 동일한 move_and_wait
+    # =========================
+    def move_and_wait(
+        self,
+        actuator_id: int,
+        position: int,
+        timeout: float = 5.0,
+    ) -> bool:
+        """
+        C# 로직:
+            SetPosition()
+            while(GetMoving()) sleep
+        """
+        self.send_mightyzap_set_position(actuator_id, position)
+
+        start = time.time()
+
+        while time.time() - start < timeout:
+            self.enqueue(MakePacket.get_moving(actuator_id))
+
+            with self._state_lock:
+                st = self.states.get(actuator_id)
+
+            if st and st.get("moving") == 0:
+                return True
+
+            time.sleep(0.05)
+
+        raise TimeoutError(f"MightyZap {hex(actuator_id)} move timeout")
 
     # =========================
     # High-level APIs
@@ -179,8 +243,8 @@ class SerialController:
         self.enqueue(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
 
     def send_pipette_change_volume(self, actuator_id: int, direction: int, duty: int):
-        direction = 0 if int(direction) <= 0 else 1
-        duty = max(0, min(100, int(duty)))
+        direction = 1 if direction > 0 else 0
+        duty = max(0, min(100, duty))
         self.enqueue(MakePacket.pipette_change_volume(actuator_id, direction, duty))
 
     def send_pipette_stop(self, actuator_id: int):
