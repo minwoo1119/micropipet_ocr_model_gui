@@ -78,6 +78,21 @@ class Controller:
             self.serial.send_mightyzap_set_position(aid, 300)
             time.sleep(0.1)
 
+        # ===============================
+        # Run-to-target 상태 저장 (GUI용)
+        # ===============================
+        self.run_state = {
+            "running": False,
+            "step": 0,
+            "current": 0,
+            "target": 0,
+            "error": 0,
+            "direction": None,
+            "duty": 0,
+            "status": "Idle",
+        }
+
+
     # =================================================
     # Video panel 연결
     # =================================================
@@ -174,12 +189,20 @@ class Controller:
     # =================================================
     # Run-to-target (worker subprocess)
     # =================================================
-    def start_run_to_target(
-        self,
-        target: int,
-        camera_index: int = 0,
-    ) -> None:
+    def start_run_to_target(self, target: int, camera_index: int = 0) -> None:
         self.stop_run_to_target()
+
+        # 상태 초기화
+        self.run_state.update({
+            "running": True,
+            "step": 0,
+            "current": 0,
+            "target": target,
+            "error": 0,
+            "direction": None,
+            "duty": 0,
+            "status": "Running",
+        })
 
         cmd = [
             "conda", "run", "-n", self.conda_env,
@@ -199,9 +222,53 @@ class Controller:
         )
 
         threading.Thread(
-            target=self._read_worker_log,
+            target=self._run_to_target_loop,
             daemon=True,
         ).start()
+
+    def _run_to_target_loop(self):
+        proc = self.long_proc
+        if not proc or not proc.stdout:
+            return
+
+        for line in proc.stdout:
+            line = line.strip()
+
+            # 1️⃣ 사람이 보는 로그
+            if not line.startswith("{"):
+                print("[WORKER]", line)
+                continue
+
+            # 2️⃣ JSON 명령 파싱
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+
+            if msg.get("cmd") != "volume":
+                continue
+
+            direction = msg["direction"]
+            duty = msg["duty"]
+            duration_ms = msg["duration_ms"]
+
+            # 3️⃣ 모터 제어 (🔥 여기서 실제 동작)
+            self.volume_dc.run(direction=direction, duty=duty)
+            time.sleep(duration_ms / 1000.0)
+            self.volume_dc.stop()
+
+            # 4️⃣ 상태 업데이트 (GUI용)
+            self.run_state.update({
+                "direction": direction,
+                "duty": duty,
+                "status": "Running",
+            })
+
+        # 종료
+        self.run_state["running"] = False
+        self.run_state["status"] = "Done"
+
+
 
     def stop_run_to_target(self) -> None:
         if self.long_proc and self.long_proc.poll() is None:
@@ -209,7 +276,13 @@ class Controller:
                 self.long_proc.terminate()
             except Exception:
                 pass
+
+        self.volume_dc.stop()
+
+        self.run_state["running"] = False
+        self.run_state["status"] = "Stopped"
         self.long_proc = None
+
 
     def _read_worker_log(self):
         proc = self.long_proc

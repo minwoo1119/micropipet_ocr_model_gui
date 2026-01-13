@@ -51,6 +51,9 @@ class RunStatusPanel(QGroupBox):
         self.timer.start(200)  # 5 Hz 갱신
 
     def refresh(self):
+        if not hasattr(self.controller, "run_state"):
+            return
+    
         s = self.controller.run_state
 
         self.lbl_status.setText(s["status"])
