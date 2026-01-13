@@ -9,8 +9,12 @@ from typing import Any, Dict, Optional, List
 from worker.serial_controller import SerialController
 from worker.actuator_linear import LinearActuator
 from worker.actuator_volume_dc import VolumeDCActuator
+from worker.paths import FRAME_JPG_PATH
 
 
+# =================================================
+# Result wrapper
+# =================================================
 @dataclass
 class WorkerResult:
     ok: bool
@@ -18,11 +22,15 @@ class WorkerResult:
     raw: str
 
 
+# =================================================
+# Controller
+# =================================================
 class Controller:
     """
     ✔ Vision / OCR / Run-to-target : subprocess (conda 유지)
     ✔ Linear actuator              : GUI process + SerialController
     ✔ DC motor                     : GUI process + SerialController
+    ✔ VideoPanel frame 갱신 중계
     """
 
     # ==============================
@@ -34,7 +42,11 @@ class Controller:
             os.path.join(os.path.dirname(__file__), "..")
         )
 
+        # worker long-running process
         self.long_proc: Optional[subprocess.Popen] = None
+
+        # GUI panel references
+        self.video_panel = None   # 🔥 VideoPanel 연결용
 
         # ------------------------------
         # Serial (GUI 생명주기 동안 1개)
@@ -67,7 +79,29 @@ class Controller:
             time.sleep(0.1)
 
     # =================================================
-    # Worker runner (Vision / OCR)
+    # Video panel 연결
+    # =================================================
+    def set_video_panel(self, panel):
+        """
+        main_window 에서 VideoPanel 생성 후 반드시 호출
+        """
+        self.video_panel = panel
+
+    def refresh_camera_view(self):
+        """
+        FRAME_JPG_PATH 에 저장된 최신 프레임을
+        VideoPanel에 표시
+        """
+        if not self.video_panel:
+            return
+
+        if not os.path.exists(FRAME_JPG_PATH):
+            return
+
+        self.video_panel.show_image(FRAME_JPG_PATH)
+
+    # =================================================
+    # Internal worker runner (Vision / OCR)
     # =================================================
     def _run_worker(
         self,
@@ -108,21 +142,43 @@ class Controller:
     # Vision / OCR APIs
     # =================================================
     def capture_frame(self, camera_index: int = 0) -> WorkerResult:
-        return self._run_worker(["--capture", f"--camera={camera_index}"], 60)
+        res = self._run_worker(
+            ["--capture", f"--camera={camera_index}"], 60
+        )
+        if res.ok:
+            self.refresh_camera_view()
+        return res
 
-    def yolo_detect(self, reset: bool = False, camera_index: int = 0) -> WorkerResult:
+    def yolo_detect(
+        self,
+        reset: bool = False,
+        camera_index: int = 0,
+    ) -> WorkerResult:
         args = ["--yolo", f"--camera={camera_index}"]
         if reset:
             args.append("--reset-rois")
-        return self._run_worker(args, 120)
+
+        res = self._run_worker(args, 120)
+        if res.ok:
+            self.refresh_camera_view()
+        return res
 
     def ocr_read_volume(self, camera_index: int = 0) -> WorkerResult:
-        return self._run_worker(["--ocr", f"--camera={camera_index}"], 120)
+        res = self._run_worker(
+            ["--ocr", f"--camera={camera_index}"], 120
+        )
+        if res.ok:
+            self.refresh_camera_view()
+        return res
 
     # =================================================
-    # Run-to-target (🔥 핵심 수정 부분)
+    # Run-to-target (worker subprocess)
     # =================================================
-    def start_run_to_target(self, target: int, camera_index: int = 0) -> None:
+    def start_run_to_target(
+        self,
+        target: int,
+        camera_index: int = 0,
+    ) -> None:
         self.stop_run_to_target()
 
         cmd = [
@@ -147,7 +203,6 @@ class Controller:
             daemon=True,
         ).start()
 
-
     def stop_run_to_target(self) -> None:
         if self.long_proc and self.long_proc.poll() is None:
             try:
@@ -168,10 +223,6 @@ class Controller:
         if proc.stderr:
             for line in proc.stderr:
                 print("[WORKER-ERR]", line.rstrip())
-
-
-
-
 
     # =================================================
     # 종료 처리

@@ -2,6 +2,9 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QVBoxLayout, QHBoxLayout,
     QPushButton, QSpinBox
 )
+from worker.paths import FRAME_JPG_PATH
+import os
+from PyQt5.QtGui import QPixmap
 
 
 class TargetPanel(QGroupBox):
@@ -41,10 +44,12 @@ class TargetPanel(QGroupBox):
     def on_read(self):
         res = self.controller.ocr_read_volume(camera_index=0)
         if not res.ok:
-            self.status.setText("Status: OCR failed (check terminal).")
+            self.status.setText("Status: OCR failed.")
             return
+
         v = int(res.data.get("volume", -1))
         self.status.setText(f"Status: OCR OK, current={v:04d}")
+
 
     def on_start(self):
         t = int(self.target_spin.value())
@@ -54,3 +59,10 @@ class TargetPanel(QGroupBox):
     def on_stop(self):
         self.controller.stop_run_to_target()
         self.status.setText("Status: Stopped.")
+
+    def update_camera_frame(self):
+        if not os.path.exists(FRAME_JPG_PATH):
+            return
+
+        pixmap = QPixmap(FRAME_JPG_PATH)
+        self.camera_label.setPixmap(pixmap)

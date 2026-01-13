@@ -23,6 +23,7 @@ class MainWindow(QWidget):
 
         # ---------- Panels ----------
         self.video_panel = VideoPanel(self.controller)
+        self.controller.set_video_panel(self.video_panel)
         self.yolo_panel = YoloPanel(self.controller, self.video_panel)
         self.target_panel = TargetPanel(self.controller)
         self.pipette_panel = PipettePanel(self.controller)
