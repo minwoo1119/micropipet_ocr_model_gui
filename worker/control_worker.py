@@ -41,20 +41,8 @@ def run_to_target(
             cur_volume = int(read_volume_trt(frame, trt_model))
             err = target - cur_volume
 
-            print(
-                f"[STEP {step:02d}] "
-                f"target={target:04d} "
-                f"cur={cur_volume:04d} "
-                f"err={err:+d}"
-            )
-
-            # ===== 2. Termination =====
-            if abs(err) <= VOLUME_TOLERANCE:
-                print("[DONE] Target volume reached")
-                break
-
-            # ===== 3. Control policy =====
-            direction = 0 if err < 0 else 1   # 0=CCW, 1=CW
+            # ===== 2. Control policy =====
+            direction = 1 if err < 0 else 0   # (네 실험 기준) 1=CCW, 0=CW
             abs_err = abs(err)
 
             if abs_err >= 300:
@@ -70,17 +58,34 @@ def run_to_target(
                 duty = 25
                 duration_ms = 150
 
-            # ===== 4. Motor control (MouseDown) =====
+            # ===== 3. Debug log (🔥 이제 의미 있음) =====
+            print(
+                f"[STEP {step:02d}] "
+                f"target={target:04d} "
+                f"cur={cur_volume:04d} "
+                f"err={err:+d} "
+                f"dir={'CCW' if direction == 1 else 'CW'} "
+                f"duty={duty:02d} "
+                f"dur={duration_ms}ms"
+            )
+
+            # ===== 4. Termination =====
+            if abs(err) <= VOLUME_TOLERANCE:
+                print("[DONE] Target volume reached")
+                break
+
+            # ===== 5. Motor control (MouseDown) =====
             volume_motor.run(direction=direction, duty=duty)
 
             # 유지 시간
             time.sleep(duration_ms / 1000.0)
 
-            # ===== 5. Motor stop (MouseUp) =====
+            # ===== 6. Motor stop (MouseUp) =====
             volume_motor.stop()
 
-            # ===== 6. Settle time =====
+            # ===== 7. Settle time =====
             time.sleep(SETTLE_TIME)
+
 
         else:
             print("[WARN] Max iteration reached")
