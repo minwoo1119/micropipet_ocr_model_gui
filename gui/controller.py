@@ -239,23 +239,25 @@ class Controller:
     # Run-to-target (conda 유지)
     # =================================================
     def start_run_to_target(
-        self,
-        target: int,
-        camera_index: int = 0,
-    ) -> None:
-        self.stop_run_to_target()
+            self,
+            target: int,
+            camera_index: int = 0,
+        ) -> None:
+            self.stop_run_to_target()
 
-        cmd = [
-            "conda", "run", "-n", self.conda_env,
-            "python", self.worker_path,
-            "--run-target",
-            f"--target={target}",
-            f"--camera={camera_index}",
-        ]
-        self.long_proc = subprocess.Popen(
-            cmd,
-            cwd=self.root_dir,
-        )
+            cmd = [
+                "conda", "run", "-n", self.conda_env,
+                "python", "-m", "worker.worker",
+                "--run-target",
+                f"--target={target}",
+                f"--camera={camera_index}",
+            ]
+
+            self.long_proc = subprocess.Popen(
+                cmd,
+                cwd=self.root_dir,
+            )
+
 
     def stop_run_to_target(self) -> None:
         if self.long_proc and self.long_proc.poll() is None:

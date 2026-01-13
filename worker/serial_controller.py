@@ -53,6 +53,11 @@ class SerialController:
             MakePacket, "request_check_operate_status", None
         )
 
+        # Thread refs (optional but clean)
+        self._tx_thread = None
+        self._rx_thread = None
+        self._poll_thread = None
+
     # =========================
     # Connection
     # =========================
@@ -69,11 +74,43 @@ class SerialController:
         time.sleep(0.5)
         self.running = True
 
-        threading.Thread(target=self._tx_worker, daemon=True).start()
-        threading.Thread(target=self._rx_worker, daemon=True).start()
-        threading.Thread(target=self._poll_worker, daemon=True).start()
+        self._tx_thread = threading.Thread(
+            target=self._tx_worker, daemon=True
+        )
+        self._rx_thread = threading.Thread(
+            target=self._rx_worker, daemon=True
+        )
+        self._poll_thread = threading.Thread(
+            target=self._poll_worker, daemon=True
+        )
+
+        self._tx_thread.start()
+        self._rx_thread.start()
+        self._poll_thread.start()
 
         return self.ser.is_open
+
+    # =========================
+    # Graceful Close (🔥 필수)
+    # =========================
+    def close(self):
+        """
+        control_worker cleanup용
+        - thread 중단
+        - serial 안전 종료
+        """
+        self.running = False
+
+        # thread들이 loop 탈출할 시간
+        time.sleep(0.1)
+
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+                if self.tx_debug:
+                    print("[SERIAL] closed")
+        except Exception as e:
+            print("[SERIAL] close error:", e)
 
     # =========================
     # TX
@@ -99,7 +136,8 @@ class SerialController:
                     if self.tx_debug:
                         print(f"[TX] {pkt.hex(' ')}")
             except Exception as e:
-                print("[TX ERROR]", e)
+                if self.running:
+                    print("[TX ERROR]", e)
 
             time.sleep(self.TX_TICK_SEC)
 
@@ -123,13 +161,14 @@ class SerialController:
                     time.sleep(0.01)
                     continue
 
-                if self.make_poll_status:
+                if self.make_poll_status and self.polling_enabled:
                     self.enqueue(self.make_poll_status())
                     self._rx_received = False
                     self._last_poll_time = now
 
             except Exception as e:
-                print("[POLL ERROR]", e)
+                if self.running:
+                    print("[POLL ERROR]", e)
 
             time.sleep(0.01)
 
@@ -162,7 +201,8 @@ class SerialController:
                         self._handle_frame(frame)
 
             except Exception as e:
-                print("[RX ERROR]", e)
+                if self.running:
+                    print("[RX ERROR]", e)
 
             time.sleep(0.002)
 
@@ -194,15 +234,11 @@ class SerialController:
     # Blocking helper
     # =========================
     def move_and_wait(self, actuator_id: int, position: int, timeout: float = 5.0):
-        # 1. 위치 명령
         self.enqueue(MakePacket.set_position(actuator_id, position))
 
-        # 2. C#과 동일: RX 안 와도 일정 시간 대기 후 통과
-        time.sleep(0.6) 
-
+        # C# 동일 동작
+        time.sleep(0.6)
         return True
-
-
 
     # =========================
     # High-level APIs (🔥 호환 필수)
@@ -217,12 +253,18 @@ class SerialController:
         self.enqueue(MakePacket.set_current(actuator_id, current))
 
     def send_mightyzap_force_onoff(self, actuator_id: int, onoff: int):
-        self.enqueue(MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0))
+        self.enqueue(
+            MakePacket.set_force_onoff(actuator_id, 1 if onoff else 0)
+        )
 
     def send_pipette_change_volume(self, actuator_id: int, direction: int, duty: int):
         direction = 0 if int(direction) <= 0 else 1
         duty = max(0, min(100, int(duty)))
-        self.enqueue(MakePacket.pipette_change_volume(actuator_id, direction, duty))
+        self.enqueue(
+            MakePacket.pipette_change_volume(actuator_id, direction, duty)
+        )
 
     def send_pipette_stop(self, actuator_id: int):
-        self.enqueue(MakePacket.pipette_change_volume(actuator_id, 0, 0))
+        self.enqueue(
+            MakePacket.pipette_change_volume(actuator_id, 0, 0)
+        )
