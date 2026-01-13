@@ -142,7 +142,6 @@ class Controller:
             bufsize=1,
         )
 
-        # 🔥 로그 읽기 thread 반드시 실행
         threading.Thread(
             target=self._read_worker_log,
             daemon=True,
@@ -154,24 +153,31 @@ class Controller:
                 self.long_proc.terminate()
             except Exception:
                 pass
+        self.long_proc = None
 
     def _read_worker_log(self):
-        proc = self.long_proc 
-
+        proc = self.long_proc
         if not proc:
             return
 
-        try:
-            if proc.stdout:
-                for line in proc.stdout:
-                    print("[WORKER]", line.rstrip())
+        def _read(stream, prefix):
+            for line in stream:
+                print(prefix, line.rstrip())
 
-            if proc.stderr:
-                for line in proc.stderr:
-                    print("[WORKER-ERR]", line.rstrip())
+        if proc.stdout:
+            threading.Thread(
+                target=_read,
+                args=(proc.stdout, "[WORKER]"),
+                daemon=True,
+            ).start()
 
-        except Exception as e:
-            print("[LOG THREAD EXIT]", e)
+        if proc.stderr:
+            threading.Thread(
+                target=_read,
+                args=(proc.stderr, "[WORKER-ERR]"),
+                daemon=True,
+            ).start()
+
 
 
     # =================================================
