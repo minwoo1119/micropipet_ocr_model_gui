@@ -5,6 +5,7 @@ from gui.panels.video_panel import VideoPanel
 from gui.panels.yolo_panel import YoloPanel
 from gui.panels.target_panel import TargetPanel
 from gui.panels.pipette_panel import PipettePanel
+from gui.panels.run_status_panel import RunStatusPanel
 
 
 class MainWindow(QWidget):
@@ -26,12 +27,14 @@ class MainWindow(QWidget):
         self.controller.set_video_panel(self.video_panel)
         self.yolo_panel = YoloPanel(self.controller, self.video_panel)
         self.target_panel = TargetPanel(self.controller)
+        self.run_status_panel = RunStatusPanel(self.controller)
         self.pipette_panel = PipettePanel(self.controller)
 
         # ---------- Right side ----------
         right_layout = QVBoxLayout()
         right_layout.addWidget(self.yolo_panel)
         right_layout.addWidget(self.target_panel)
+        right_layout.addWidget(self.run_status_panel)
         right_layout.addWidget(self.pipette_panel)
         right_layout.addStretch(1)
 
