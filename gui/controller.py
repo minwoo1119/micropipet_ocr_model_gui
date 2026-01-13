@@ -147,6 +147,7 @@ class Controller:
             daemon=True,
         ).start()
 
+
     def stop_run_to_target(self) -> None:
         if self.long_proc and self.long_proc.poll() is None:
             try:
@@ -160,23 +161,15 @@ class Controller:
         if not proc:
             return
 
-        def _read(stream, prefix):
-            for line in stream:
-                print(prefix, line.rstrip())
-
         if proc.stdout:
-            threading.Thread(
-                target=_read,
-                args=(proc.stdout, "[WORKER]"),
-                daemon=True,
-            ).start()
+            for line in proc.stdout:
+                print("[WORKER]", line.rstrip())
 
         if proc.stderr:
-            threading.Thread(
-                target=_read,
-                args=(proc.stderr, "[WORKER-ERR]"),
-                daemon=True,
-            ).start()
+            for line in proc.stderr:
+                print("[WORKER-ERR]", line.rstrip())
+
+
 
 
 

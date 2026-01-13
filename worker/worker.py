@@ -14,6 +14,7 @@ from worker.yolo_worker import run_yolo_on_frame
 from worker.ocr_trt import TRTWrapper, read_volume_trt
 from worker.control_worker import run_to_target
 
+print("[WORKER] worker.py entry", flush=True)
 
 # ==================================================
 # Utils

@@ -27,6 +27,8 @@ def run_to_target(
     ser = SerialController()
     if not ser.connect():
         raise RuntimeError("Serial connect failed")
+    print("[RUN] serial skipped", flush=True)
+
 
     # ---------- Actuator ----------
     volume_motor = VolumeDCActuator(
