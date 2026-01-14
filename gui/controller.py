@@ -3,6 +3,7 @@ import time
 import os
 import subprocess
 import threading
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
 
@@ -259,10 +260,13 @@ class Controller:
 
             # 4️⃣ 상태 업데이트 (GUI용)
             self.run_state.update({
+                "current": msg["current"],
+                "error": msg["error"],
                 "direction": direction,
                 "duty": duty,
                 "status": "Running",
             })
+
 
         # 종료
         self.run_state["running"] = False
@@ -283,19 +287,6 @@ class Controller:
         self.run_state["status"] = "Stopped"
         self.long_proc = None
 
-
-    def _read_worker_log(self):
-        proc = self.long_proc
-        if not proc:
-            return
-
-        if proc.stdout:
-            for line in proc.stdout:
-                print("[WORKER]", line.rstrip())
-
-        if proc.stderr:
-            for line in proc.stderr:
-                print("[WORKER-ERR]", line.rstrip())
 
     # =================================================
     # 종료 처리
