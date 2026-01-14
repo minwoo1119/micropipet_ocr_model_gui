@@ -106,9 +106,8 @@ def preprocess_roi_bgr_trt(roi_bgr: np.ndarray) -> np.ndarray:
     rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb)
 
-    x = _preprocess(pil)          # torch.Tensor (3,H,W)
-    x = x.numpy().astype(np.float32)
-    return x
+    x = _preprocess(pil)
+    return x.numpy().astype(np.float32)
 
 
 # =========================================================
@@ -128,13 +127,20 @@ def load_rois():
 
 
 # =========================================================
-# Main OCR logic (TRT)
+# NEW: ROI 단위 OCR (dataset 수집용)
 # =========================================================
-def read_volume_trt(frame: np.ndarray, trt_model: TRTWrapper) -> int:
+def read_digits_trt(
+    frame: np.ndarray,
+    trt_model: TRTWrapper,
+):
+    """
+    Returns:
+        digits: List[int]        # 각 ROI digit (0~9)
+        confs:  List[float]      # 각 digit confidence
+        crops:  List[np.ndarray] # 각 ROI BGR 이미지
+    """
     rois = load_rois()
-
-    # 위 → 아래 (천/백/십/일)
-    rois = sorted(rois, key=lambda r: r[1])
+    rois = sorted(rois, key=lambda r: r[1])  # 위 → 아래
 
     h, w = frame.shape[:2]
     crops = []
@@ -149,7 +155,6 @@ def read_volume_trt(frame: np.ndarray, trt_model: TRTWrapper) -> int:
         if crop.size == 0:
             raise RuntimeError(f"Empty ROI{i}")
 
-        cv2.imwrite(f"/tmp/ocr_roi_{i}.jpg", crop)
         crops.append(crop)
 
     if len(crops) < 4:
@@ -161,7 +166,18 @@ def read_volume_trt(frame: np.ndarray, trt_model: TRTWrapper) -> int:
     ).astype(np.float32)
 
     pred_cls, pred_conf, _ = trt_model.infer(batch)
+
     digits = [int(d) for d in pred_cls[:4]]
+    confs  = [float(c) for c in pred_conf[:4]]
+
+    return digits, confs, crops
+
+
+# =========================================================
+# Main OCR logic (운영용: volume 계산)
+# =========================================================
+def read_volume_trt(frame: np.ndarray, trt_model: TRTWrapper) -> int:
+    digits, _, _ = read_digits_trt(frame, trt_model)
 
     volume = sum(d * w for d, w in zip(digits, VOLUME_WEIGHTS))
     return volume
