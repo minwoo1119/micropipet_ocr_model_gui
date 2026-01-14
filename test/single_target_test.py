@@ -40,6 +40,8 @@ def ensure_volume_dc():
     if _serial is None:
         _serial = SerialController()
 
+        _serial.connect()
+
     if _volume_dc is None:
         _volume_dc = VolumeDCActuator(
             serial=_serial,
