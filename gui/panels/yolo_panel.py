@@ -1,5 +1,12 @@
 import json
-from PyQt5.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit
+import os
+
+from PyQt5.QtWidgets import (
+    QGroupBox, QLabel, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit
+)
+from PyQt5.QtGui import QPixmap, QPainter, QPen
+from PyQt5.QtCore import Qt
 
 
 class YoloPanel(QGroupBox):
@@ -29,23 +36,126 @@ class YoloPanel(QGroupBox):
         layout.addWidget(self.roi_text)
         self.setLayout(layout)
 
+    # --------------------------------------------------
     def _run(self, reset: bool):
         cam = int(self.video_panel.camera_spin.value())
         res = self.controller.yolo_detect(reset=reset, camera_index=cam)
+
         if not res.ok:
             self.roi_text.setPlainText("YOLO failed.\nCheck terminal logs.")
             return
 
-        rois = res.data.get("rois", [])
-        self.roi_text.setPlainText(json.dumps(rois, indent=2, ensure_ascii=False))
+        raw_rois = res.data.get("rois", [])
+        fixed_rois = self.normalize_vertical_rois(raw_rois, expected_count=4)
 
-        annotated = res.data.get("annotated_path", "")
-        if annotated:
-            self.video_panel.show_image(annotated)
+        self.roi_text.setPlainText(
+            json.dumps(
+                {"raw": raw_rois, "fixed": fixed_rois},
+                indent=2,
+                ensure_ascii=False
+            )
+        )
 
+        # 🔑 핵심: 원본 프레임 + Qt Painter overlay
+        frame_path = res.data.get("frame_path")
+        if frame_path and os.path.exists(frame_path):
+            self.show_fixed_rois(frame_path, fixed_rois)
+
+    # --------------------------------------------------
     def on_detect(self):
         print("[GUI] YOLO detect button clicked")
         self._run(reset=False)
 
     def on_reset(self):
         self._run(reset=True)
+
+    # --------------------------------------------------
+    @staticmethod
+    def normalize_vertical_rois(rois, expected_count=4):
+        """
+        return format:
+        [
+        [x, y, size, size],
+        [x, y + gap, size, size],
+        [x, y + 2*gap, size, size],
+        [x, y + 3*gap, size, size],
+        ]
+        """
+
+        if len(rois) < expected_count:
+            return rois
+
+        # -----------------------------------------
+        # 1. 중심점과 height 수집
+        # -----------------------------------------
+        centers = []
+        heights = []
+
+        for x, y, w, h in rois:
+            centers.append((x + w / 2, y + h / 2))
+            heights.append(h)
+
+        # -----------------------------------------
+        # 2. size 결정 (정사각형 보장)
+        # -----------------------------------------
+        size = int(sum(heights) / len(heights))
+
+        # -----------------------------------------
+        # 3. x 위치 고정 (모두 동일)
+        # -----------------------------------------
+        avg_cx = sum(cx for cx, _ in centers) / len(centers)
+        fixed_x = int(avg_cx - size / 2)
+
+        # -----------------------------------------
+        # 4. y 정렬용 중심값 정렬
+        # -----------------------------------------
+        centers.sort(key=lambda c: c[1])  # cy 기준
+
+        # -----------------------------------------
+        # 5. y 간 평균 간격 계산
+        # -----------------------------------------
+        gaps = [
+            centers[i + 1][1] - centers[i][1]
+            for i in range(len(centers) - 1)
+        ]
+        avg_gap = sum(gaps) / len(gaps)
+
+        # -----------------------------------------
+        # 6. 시작 y (top ROI 기준)
+        # -----------------------------------------
+        start_y = int(centers[0][1] - size / 2)
+
+        # -----------------------------------------
+        # 7. 강제 정렬 ROI 생성
+        # -----------------------------------------
+        normalized = []
+        for i in range(expected_count):
+            y = int(start_y + i * avg_gap)
+            normalized.append([fixed_x, y, size, size])  # ⭐ w == h 보장
+
+        return normalized
+
+
+
+    # --------------------------------------------------
+    # 🔥 OpenCV 없이 GUI에서 직접 ROI 렌더링
+    # --------------------------------------------------
+    def show_fixed_rois(self, image_path, fixed_rois):
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            print("[WARN] Failed to load image:", image_path)
+            return
+
+        painter = QPainter(pixmap)
+        pen = QPen(Qt.green)
+        pen.setWidth(2)
+        painter.setPen(pen)
+
+        for idx, (x, y, w, h) in enumerate(fixed_rois):
+            painter.drawRect(x, y, w, h)
+            painter.drawText(x, y - 4, f"ROI {idx}")
+
+        painter.end()
+
+        # video_panel이 QPixmap을 받을 수 있어야 함
+        self.video_panel.show_pixmap(pixmap)
