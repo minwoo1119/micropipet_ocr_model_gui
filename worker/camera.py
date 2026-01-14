@@ -21,6 +21,5 @@ def capture_one_frame(camera_index: int = 0, warmup_frames: int = 10):
     if frame is None:
         raise RuntimeError("Failed to capture frame.")
     
-    # frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
     return frame

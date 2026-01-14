@@ -1,28 +1,53 @@
 import time
+import os
+import shutil
+
 from worker.control_worker import run_to_target
-from test.test_utils import ensure_dirs, take_snapshot
+from worker.capture_frame import capture_one_frame_to_disk, OUTPUT_PATH
+
+SNAP_DIR = "snapshots"
+
+
+def ensure_dirs():
+    os.makedirs(SNAP_DIR, exist_ok=True)
+
+
+def save_gui_frame_snapshot(order, value_ml):
+    """
+    GUI에서 OCR에 실제로 사용한 프레임(latest_frame.jpg)을 그대로 저장
+    """
+    fname = f"{order:04d}_{value_ml:.3f}.jpg"
+    dst = os.path.join(SNAP_DIR, fname)
+    shutil.copy(OUTPUT_PATH, dst)
+    print(f"[TEST] snapshot saved: {dst}")
+
 
 def main():
     ensure_dirs()
 
-    target_ul = 1200  # 🔹 여기서 임시로 목표값 변경
-    print(f"[TEST] Run to target: {target_ul} uL")
+    target_ul = 1200
+    print(f"[TEST] Run to target (GUI-exact mode): {target_ul} uL")
+
+    capture_one_frame_to_disk(camera_index=0)
 
     start = time.time()
 
     result = run_to_target(
-        target_ul=target_ul,
-        tolerance=5,        # 허용 오차 (uL)
-        max_loop=100
+        target=target_ul,
+        camera_index=0,
     )
 
     elapsed = time.time() - start
 
-    print("[RESULT]", result)
-    print(f"[TIME] {elapsed:.2f}s")
+    print("\n========== RESULT ==========")
+    print(result)
+    print(f"Elapsed: {elapsed:.2f}s")
 
-    # 최종 도달 시 스냅샷
-    take_snapshot(order=1, value_ml=target_ul / 1000)
+    if result and result.get("success"):
+        save_gui_frame_snapshot(1, target_ul / 1000)
+    else:
+        print("❌ Failed to reach target")
+
 
 if __name__ == "__main__":
     main()

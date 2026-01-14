@@ -22,14 +22,24 @@ def run_to_target(
     camera_index: int = 0,
     max_iter: int = MAX_ITER,
 ):
+    print(">>> ENTER run_to_target()", flush=True)
     _elog("[RUN] run_to_target started (VISION ONLY)")
 
+    print("[DEBUG] before TRT load", flush=True)
     trt_model = TRTWrapper(OCR_TRT_PATH)
+    print("[DEBUG] after TRT load", flush=True)
+
+    final_volume = None
+    success = False
 
     for step in range(max_iter):
+        print("[DEBUG] before capture", flush=True)
         frame = capture_one_frame(camera_index)
+        print("[DEBUG] after capture", flush=True)
         cur_volume = int(read_volume_trt(frame, trt_model))
         err = target - cur_volume
+
+        final_volume = cur_volume
 
         # 종료 조건
         if abs(err) <= VOLUME_TOLERANCE:
@@ -40,7 +50,11 @@ def run_to_target(
                 "target": target,
                 "error": err,
             }), flush=True)
+
             _elog("[DONE] target reached")
+
+            success = True
+            reason = "done"
             break
 
         direction = 1 if err < 0 else 0
@@ -59,13 +73,11 @@ def run_to_target(
             duty = 25
             duration_ms = 150
 
-        # 사람 로그는 stderr
         _elog(
             f"[STEP {step}] cur={cur_volume} err={err} "
             f"dir={'CCW' if direction==1 else 'CW'} duty={duty} dur={duration_ms}ms"
         )
 
-        # GUI용 JSON은 stdout (✅ 이것만 stdout)
         print(json.dumps({
             "cmd": "volume",
             "step": step,
@@ -84,6 +96,19 @@ def run_to_target(
             "cmd": "warn",
             "status": "max_iter"
         }), flush=True)
+
         _elog("[WARN] max_iter reached")
 
+        success = False
+        reason = "max_iter"
+
     _elog("[CLEANUP] run_to_target finished")
+
+    # ✅ 실험/테스트용 반환값
+    return {
+        "success": success,
+        "final_ul": final_volume,
+        "target_ul": target,
+        "iterations": step + 1,
+        "reason": reason
+    }
