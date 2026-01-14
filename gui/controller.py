@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
 
+from PyQt5.QtCore import QObject, pyqtSignal
+
 from worker.serial_controller import SerialController
 from worker.actuator_linear import LinearActuator
 from worker.actuator_volume_dc import VolumeDCActuator
@@ -23,21 +25,26 @@ class WorkerResult:
 
 
 # =================================================
-# Controller
+# Controller (🔥 QObject 상속)
 # =================================================
-class Controller:
+class Controller(QObject):
     """
     ✔ Vision / OCR / Run-to-target : subprocess (conda 유지)
     ✔ Linear actuator              : GUI process + SerialController
     ✔ DC motor                     : GUI process + SerialController
     ✔ VideoPanel frame 갱신 중계
-    ✔ RunStatusPanel 상태 공유
+    ✔ RunStatusPanel 상태 Signal 전달
     """
+
+    # 🔥 RunStatusPanel로 보내는 Signal
+    run_state_updated = pyqtSignal(dict)
 
     # ==============================
     # Init
     # ==============================
     def __init__(self, conda_env: str = "pipet_env"):
+        super().__init__()
+
         self.conda_env = conda_env
         self.root_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..")
@@ -76,7 +83,7 @@ class Controller:
             time.sleep(0.1)
 
         # ===============================
-        # Run-to-target 상태 (GUI 공유)
+        # Run-to-target 상태 (내부 저장)
         # ===============================
         self.run_state: Dict[str, Any] = {
             "running": False,
@@ -177,7 +184,7 @@ class Controller:
         self.stop_run_to_target()
 
         # 초기 상태
-        self.run_state.update({
+        state = {
             "running": True,
             "step": 0,
             "current": 0,
@@ -186,7 +193,10 @@ class Controller:
             "direction": None,
             "duty": 0,
             "status": "Running",
-        })
+        }
+
+        self.run_state = state
+        self.run_state_updated.emit(state)
 
         cmd = [
             "conda", "run", "-n", self.conda_env,
@@ -218,12 +228,10 @@ class Controller:
         for line in proc.stdout:
             line = line.strip()
 
-            # 사람이 보는 로그는 그냥 출력
             if not line.startswith("{"):
                 print("[WORKER]", line)
                 continue
 
-            # 🔥 JSON 파싱
             try:
                 msg = json.loads(line)
             except Exception:
@@ -232,8 +240,8 @@ class Controller:
             cmd = msg.get("cmd")
 
             if cmd == "volume":
-                # 1️⃣ 상태 갱신 (GUI용)
-                self.run_state.update({
+                state = {
+                    "running": True,
                     "step": msg["step"],
                     "current": msg["current"],
                     "target": msg["target"],
@@ -241,9 +249,13 @@ class Controller:
                     "direction": msg["direction"],
                     "duty": msg["duty"],
                     "status": "Running",
-                })
+                }
 
-                # 2️⃣ 모터 제어
+                # 🔥 상태 갱신 + Signal
+                self.run_state = state
+                self.run_state_updated.emit(state)
+
+                # 모터 제어
                 self.volume_dc.run(
                     direction=msg["direction"],
                     duty=msg["duty"],
@@ -252,23 +264,29 @@ class Controller:
                 self.volume_dc.stop()
 
             elif cmd == "done":
-                self.run_state.update({
+                state = {
+                    "running": False,
                     "step": msg["step"],
                     "current": msg["current"],
                     "target": msg["target"],
                     "error": msg["error"],
+                    "direction": None,
+                    "duty": 0,
                     "status": "Done",
-                    "running": False,
-                })
+                }
+                self.run_state = state
+                self.run_state_updated.emit(state)
                 break
 
             elif cmd == "warn":
-                self.run_state.update({
-                    "status": "Max iteration reached",
+                state = {
+                    **self.run_state,
                     "running": False,
-                })
+                    "status": "Max iteration reached",
+                }
+                self.run_state = state
+                self.run_state_updated.emit(state)
                 break
-
 
     def stop_run_to_target(self) -> None:
         if self.long_proc and self.long_proc.poll() is None:
@@ -276,10 +294,13 @@ class Controller:
 
         self.volume_dc.stop()
 
-        self.run_state.update({
+        state = {
+            **self.run_state,
             "running": False,
             "status": "Stopped",
-        })
+        }
+        self.run_state = state
+        self.run_state_updated.emit(state)
 
         self.long_proc = None
 
