@@ -1,24 +1,53 @@
 # worker/dataset_collector.py
 import os
 import time
-import random
+import json
+import subprocess
+import sys
 import cv2
+import random
 
-from worker.camera import capture_one_frame
-from worker.ocr_trt import read_volume_trt
+from worker.serial_controller import SerialController
 from worker.actuator_volume_dc import VolumeDCActuator
+from worker.capture_frame import OUTPUT_PATH
 from worker.paths import ROIS_JSON_PATH
 
-import json
+# =========================================================
+# Config
+# =========================================================
+DATASET_ROOT = "dataset"      # ocr_motor/dataset/0~9
+CAPTURE_INTERVAL = 0.5
+OCR_TIMEOUT = 10
 
-DATASET_ROOT = "dataset"
-CAPTURE_INTERVAL = 0.5   # sec
-MIN_CONF = 0.85          # OCR confidence threshold
+# =========================================================
+# Global motor (single_target_test 동일)
+# =========================================================
+_serial = None
+_volume_dc = None
 
 
+def ensure_volume_dc():
+    global _serial, _volume_dc
+
+    if _serial is None:
+        _serial = SerialController()
+        _serial.connect()
+
+    if _volume_dc is None:
+        _volume_dc = VolumeDCActuator(
+            serial=_serial,
+            actuator_id=0x0C,   # single_target_test와 동일
+        )
+
+    return _volume_dc
+
+
+# =========================================================
+# ROI
+# =========================================================
 def load_rois():
     with open(ROIS_JSON_PATH, "r") as f:
-        return json.load(f)
+        return json.load(f)   # [[x,y,w,h], ...]
 
 
 def ensure_dirs():
@@ -26,48 +55,96 @@ def ensure_dirs():
         os.makedirs(os.path.join(DATASET_ROOT, str(i)), exist_ok=True)
 
 
-def random_motor_move(actuator: VolumeDCActuator):
-    """
-    소량 랜덤 회전
-    """
-    step = random.randint(-15, 15)   # tick or degree 단위
-    actuator.move_relative(step)
-    time.sleep(0.2)
+# =========================================================
+# Motor (GUI / test 동일)
+# =========================================================
+def random_motor_move():
+    motor = ensure_volume_dc()
+
+    direction = random.choice([0, 1])
+    duty = random.randint(30, 60)
+    duration_ms = random.randint(100, 300)
+
+    motor.run(direction=direction, duty=duty)
+    time.sleep(duration_ms / 1000.0)
+    motor.stop()
 
 
-def collect_once(actuator, rois, ocr):
-    random_motor_move(actuator)
+# =========================================================
+# ⭐ single_target_test와 동일한 OCR 실행
+# =========================================================
+def run_ocr():
+    cmd = [
+        sys.executable,
+        "-m", "worker.worker",
+        "--ocr",
+        "--camera=0",
+        "--rotate=1",
+    ]
 
-    frame = capture_one_frame(0)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
-    for roi in rois:
-        x, y, w, h = roi["x"], roi["y"], roi["w"], roi["h"]
+    try:
+        p.communicate(timeout=OCR_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        print("[WARN] OCR timeout")
+
+
+# =========================================================
+# Collect once
+# =========================================================
+def collect_once(rois):
+    # 1. 모터 랜덤 이동
+    random_motor_move()
+
+    # 2. ⭐ single_target_test와 동일한 OCR 경로
+    run_ocr()
+
+    # 3. OCR 결과 이미지 로드
+    if not os.path.exists(OUTPUT_PATH):
+        print("[WARN] latest_frame.jpg not found")
+        return
+
+    frame = cv2.imread(OUTPUT_PATH)
+    if frame is None:
+        print("[WARN] failed to load latest_frame.jpg")
+        return
+
+    # 4. ROI crop + 저장
+    for (x, y, w, h) in rois:
         crop = frame[y:y+h, x:x+w]
-
         if crop.size == 0:
             continue
 
-        pred, conf = read_volume_trt(ocr, crop, return_conf=True)
-
-        if pred is None or conf < MIN_CONF:
-            continue
-
-        label = str(pred)
+        # 숫자 라벨은 파일명에서 OCR로 읽지 않고
+        # "일단 사람이 나중에 분류" or "후처리" 전제
         ts = int(time.time() * 1000)
-        save_path = os.path.join(
-            DATASET_ROOT, label, f"{label}_{ts}.png"
-        )
+
+        # 임시로 unknown → 후처리용
+        save_dir = os.path.join(DATASET_ROOT, "unknown")
+        os.makedirs(save_dir, exist_ok=True)
+
+        save_path = os.path.join(save_dir, f"{ts}.png")
         cv2.imwrite(save_path, crop)
-        print(f"[SAVE] {save_path} (conf={conf:.2f})")
+
+        print(f"[SAVE] {save_path}")
 
 
-def run_dataset_collection(actuator, ocr, max_iter=None):
+# =========================================================
+# Main loop
+# =========================================================
+def run_dataset_collection(max_iter=None):
     ensure_dirs()
     rois = load_rois()
 
     i = 0
     while True:
-        collect_once(actuator, rois, ocr)
+        collect_once(rois)
         i += 1
 
         if max_iter and i >= max_iter:
