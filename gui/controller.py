@@ -1,3 +1,4 @@
+# gui/controller.py
 import json
 import time
 import os
@@ -14,9 +15,6 @@ from worker.actuator_volume_dc import VolumeDCActuator
 from worker.paths import FRAME_JPG_PATH
 
 
-# =================================================
-# Result wrapper
-# =================================================
 @dataclass
 class WorkerResult:
     ok: bool
@@ -24,24 +22,10 @@ class WorkerResult:
     raw: str
 
 
-# =================================================
-# Controller (🔥 QObject 상속)
-# =================================================
 class Controller(QObject):
-    """
-    ✔ Vision / OCR / Run-to-target : subprocess (conda 유지)
-    ✔ Linear actuator              : GUI process + SerialController
-    ✔ DC motor                     : GUI process + SerialController
-    ✔ VideoPanel frame 갱신 중계
-    ✔ RunStatusPanel 상태 Signal 전달
-    """
-
-    # 🔥 RunStatusPanel로 보내는 Signal
+    # 🔥 Signal: run_state dict 전달
     run_state_updated = pyqtSignal(dict)
 
-    # ==============================
-    # Init
-    # ==============================
     def __init__(self, conda_env: str = "pipet_env"):
         super().__init__()
 
@@ -50,28 +34,17 @@ class Controller(QObject):
             os.path.join(os.path.dirname(__file__), "..")
         )
 
-        # worker subprocess
         self.long_proc: Optional[subprocess.Popen] = None
 
-        # GUI panel refs
         self.video_panel = None
 
-        # ------------------------------
-        # Serial (단일 세션 유지)
-        # ------------------------------
         self.serial = SerialController("/dev/ttyUSB0")
         self.serial.connect()
 
-        # ------------------------------
-        # Actuators
-        # ------------------------------
         self.pipetting_linear = LinearActuator(self.serial, 0x0B)
         self.volume_linear = LinearActuator(self.serial, 0x0A)
         self.volume_dc = VolumeDCActuator(self.serial, 0x0C)
 
-        # ------------------------------
-        # MightyZap 초기화 (기존 유지)
-        # ------------------------------
         for aid in (0x0B, 0x0A):
             self.serial.send_mightyzap_force_onoff(aid, 1)
             time.sleep(0.1)
@@ -82,9 +55,6 @@ class Controller(QObject):
             self.serial.send_mightyzap_set_position(aid, 300)
             time.sleep(0.1)
 
-        # ===============================
-        # Run-to-target 상태 (내부 저장)
-        # ===============================
         self.run_state: Dict[str, Any] = {
             "running": False,
             "step": 0,
@@ -96,9 +66,9 @@ class Controller(QObject):
             "status": "Idle",
         }
 
-    # =================================================
-    # Video panel 연결
-    # =================================================
+    # --------------------------
+    # Video panel 연결/갱신
+    # --------------------------
     def set_video_panel(self, panel):
         self.video_panel = panel
 
@@ -106,15 +76,10 @@ class Controller(QObject):
         if self.video_panel and os.path.exists(FRAME_JPG_PATH):
             self.video_panel.show_image(FRAME_JPG_PATH)
 
-    # =================================================
-    # Internal worker runner (단발)
-    # =================================================
-    def _run_worker(
-        self,
-        args: List[str],
-        timeout: Optional[int] = 120,
-    ) -> WorkerResult:
-
+    # --------------------------
+    # 단발 worker 실행
+    # --------------------------
+    def _run_worker(self, args: List[str], timeout: Optional[int] = 120) -> WorkerResult:
         cmd = [
             "conda", "run", "-n", self.conda_env,
             "python", "-u", "-m", "worker.worker",
@@ -140,51 +105,35 @@ class Controller(QObject):
         except Exception:
             return WorkerResult(False, {}, raw)
 
-    # =================================================
-    # Vision / OCR APIs (기존 유지)
-    # =================================================
     def capture_frame(self, camera_index: int = 0) -> WorkerResult:
-        res = self._run_worker(
-            ["--capture", f"--camera={camera_index}"], 60
-        )
+        res = self._run_worker(["--capture", f"--camera={camera_index}"], 60)
         if res.ok:
             self.refresh_camera_view()
         return res
 
-    def yolo_detect(
-        self,
-        reset: bool = False,
-        camera_index: int = 0,
-    ) -> WorkerResult:
+    def yolo_detect(self, reset: bool = False, camera_index: int = 0) -> WorkerResult:
         args = ["--yolo", f"--camera={camera_index}"]
         if reset:
             args.append("--reset-rois")
-
         res = self._run_worker(args, 120)
         if res.ok:
             self.refresh_camera_view()
         return res
 
     def ocr_read_volume(self, camera_index: int = 0) -> WorkerResult:
-        res = self._run_worker(
-            ["--ocr", f"--camera={camera_index}"], 120
-        )
+        res = self._run_worker(["--ocr", f"--camera={camera_index}"], 120)
         if res.ok:
             self.refresh_camera_view()
         return res
 
     # =================================================
-    # Run-to-target
+    # Run-to-target (핵심)
     # =================================================
-    def start_run_to_target(
-        self,
-        target: int,
-        camera_index: int = 0,
-    ) -> None:
+    def start_run_to_target(self, target: int, camera_index: int = 0) -> None:
         self.stop_run_to_target()
 
-        # 초기 상태
-        state = {
+        # 초기 상태 emit (패널 즉시 갱신)
+        self.run_state.update({
             "running": True,
             "step": 0,
             "current": 0,
@@ -193,10 +142,8 @@ class Controller(QObject):
             "direction": None,
             "duty": 0,
             "status": "Running",
-        }
-
-        self.run_state = state
-        self.run_state_updated.emit(state)
+        })
+        self.run_state_updated.emit(dict(self.run_state))
 
         cmd = [
             "conda", "run", "-n", self.conda_env,
@@ -206,6 +153,7 @@ class Controller(QObject):
             f"--camera={camera_index}",
         ]
 
+        # ✅ stderr도 읽어야 worker가 죽는지 알 수 있음
         self.long_proc = subprocess.Popen(
             cmd,
             cwd=self.root_dir,
@@ -215,98 +163,120 @@ class Controller(QObject):
             bufsize=1,
         )
 
-        threading.Thread(
-            target=self._run_to_target_loop,
-            daemon=True,
-        ).start()
+        threading.Thread(target=self._run_to_target_stdout_loop, daemon=True).start()
+        threading.Thread(target=self._run_to_target_stderr_loop, daemon=True).start()
 
-    def _run_to_target_loop(self):
+    def _run_to_target_stdout_loop(self):
         proc = self.long_proc
         if not proc or not proc.stdout:
             return
 
         for line in proc.stdout:
             line = line.strip()
-
-            if not line.startswith("{"):
-                print("[WORKER]", line)
+            if not line:
                 continue
 
+            # ✅ 이제 stdout에는 JSON만 오도록 control_worker를 바꿨기 때문에
+            # 바로 json.loads 시도하면 된다.
             try:
                 msg = json.loads(line)
             except Exception:
+                # 혹시 stdout에 섞이면 여기 찍히게 됨
+                print("[WORKER][STDOUT-NONJSON]", line)
                 continue
 
             cmd = msg.get("cmd")
 
             if cmd == "volume":
-                state = {
+                # 상태 갱신 + emit
+                self.run_state.update({
                     "running": True,
-                    "step": msg["step"],
-                    "current": msg["current"],
-                    "target": msg["target"],
-                    "error": msg["error"],
-                    "direction": msg["direction"],
-                    "duty": msg["duty"],
+                    "step": msg.get("step", 0),
+                    "current": msg.get("current", 0),
+                    "target": msg.get("target", self.run_state["target"]),
+                    "error": msg.get("error", 0),
+                    "direction": msg.get("direction", None),
+                    "duty": msg.get("duty", 0),
                     "status": "Running",
-                }
-
-                # 🔥 상태 갱신 + Signal
-                self.run_state = state
-                self.run_state_updated.emit(state)
+                })
+                self.run_state_updated.emit(dict(self.run_state))
 
                 # 모터 제어
-                self.volume_dc.run(
-                    direction=msg["direction"],
-                    duty=msg["duty"],
-                )
-                time.sleep(msg["duration_ms"] / 1000.0)
+                direction = int(msg["direction"])
+                duty = int(msg["duty"])
+                duration_ms = int(msg["duration_ms"])
+
+                self.volume_dc.run(direction=direction, duty=duty)
+                time.sleep(duration_ms / 1000.0)
                 self.volume_dc.stop()
 
             elif cmd == "done":
-                state = {
+                self.run_state.update({
                     "running": False,
-                    "step": msg["step"],
-                    "current": msg["current"],
-                    "target": msg["target"],
-                    "error": msg["error"],
-                    "direction": None,
-                    "duty": 0,
+                    "step": msg.get("step", self.run_state["step"]),
+                    "current": msg.get("current", self.run_state["current"]),
+                    "target": msg.get("target", self.run_state["target"]),
+                    "error": msg.get("error", 0),
                     "status": "Done",
-                }
-                self.run_state = state
-                self.run_state_updated.emit(state)
+                })
+                self.run_state_updated.emit(dict(self.run_state))
                 break
 
             elif cmd == "warn":
-                state = {
-                    **self.run_state,
+                self.run_state.update({
                     "running": False,
                     "status": "Max iteration reached",
-                }
-                self.run_state = state
-                self.run_state_updated.emit(state)
+                })
+                self.run_state_updated.emit(dict(self.run_state))
                 break
+
+        # 프로세스 종료 처리
+        self.run_state["running"] = False
+        self.run_state_updated.emit(dict(self.run_state))
+
+    def _run_to_target_stderr_loop(self):
+        proc = self.long_proc
+        if not proc or not proc.stderr:
+            return
+
+        # stderr는 사람이 보는 로그
+        for line in proc.stderr:
+            line = line.rstrip()
+            if not line:
+                continue
+            print("[WORKER][STDERR]", line)
+
+        # stderr 끝났는데 stdout에서 아무 업데이트도 안 왔다면
+        # (worker가 바로 죽었을 가능성)
+        if self.long_proc and self.long_proc.poll() is not None:
+            rc = self.long_proc.returncode
+            if self.run_state.get("status") == "Running" and self.run_state.get("step", 0) == 0:
+                self.run_state.update({
+                    "running": False,
+                    "status": f"Worker exited (rc={rc})",
+                })
+                self.run_state_updated.emit(dict(self.run_state))
 
     def stop_run_to_target(self) -> None:
         if self.long_proc and self.long_proc.poll() is None:
-            self.long_proc.terminate()
+            try:
+                self.long_proc.terminate()
+            except Exception:
+                pass
 
-        self.volume_dc.stop()
+        try:
+            self.volume_dc.stop()
+        except Exception:
+            pass
 
-        state = {
-            **self.run_state,
+        self.run_state.update({
             "running": False,
             "status": "Stopped",
-        }
-        self.run_state = state
-        self.run_state_updated.emit(state)
+        })
+        self.run_state_updated.emit(dict(self.run_state))
 
         self.long_proc = None
 
-    # =================================================
-    # 종료 처리
-    # =================================================
     def close(self):
         try:
             self.volume_dc.stop()
