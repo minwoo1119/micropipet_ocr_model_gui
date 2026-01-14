@@ -1,13 +1,14 @@
-# test/batch_random_test.py
-import random
+import subprocess
+import json
 import time
 import os
+import sys
+import random
+import cv2
 
-from .single_target_test import (
-    single_target_test,
-    save_snapshot,
-    ensure_dirs,
-)
+from worker.capture_frame import OUTPUT_PATH
+from worker.serial_controller import SerialController
+from worker.actuator_volume_dc import VolumeDCActuator
 
 # ==========================================================
 # Config
@@ -18,105 +19,198 @@ BATCH_COUNT = 1000
 TARGET_MIN = 500
 TARGET_MAX = 5000
 
-INTER_RUN_DELAY_SEC = 1.0   # 각 실험 사이 휴식 (모터/기구 보호)
+VOLUME_TOLERANCE = 1
+SETTLE_TIME = 0.7
+MAX_ITER = 60
+OCR_TIMEOUT = 20
+INTER_RUN_DELAY_SEC = 1.0
+
+# OCR sanity
+VALID_MIN_UL = 500
+VALID_MAX_UL = 5000
+JUMP_THRESHOLD_UL = 200
+MAX_OCR_RETRY = 2
+
+NUDGE_DUTY = 25
+NUDGE_DURATION_MS = 70
+NUDGE_DIRECTION = 1
+NUDGE_SETTLE_SEC = 0.15
+
+ROTATE = 1  # 90 CW
+
+# ==========================================================
+# Global actuator
+# ==========================================================
+_serial = None
+_volume_dc = None
+
+
+def ensure_dirs():
+    os.makedirs(SNAP_DIR, exist_ok=True)
+
+
+def ensure_volume_dc():
+    global _serial, _volume_dc
+
+    if _serial is None:
+        _serial = SerialController()
+        _serial.connect()
+
+    if _volume_dc is None:
+        _volume_dc = VolumeDCActuator(
+            serial=_serial,
+            actuator_id=0x0C,
+        )
+
+    return _volume_dc
 
 
 # ==========================================================
-# Snapshot index utility
+# Snapshot index
 # ==========================================================
-def get_next_snapshot_index(snap_dir: str) -> int:
-    """
-    snapshots 디렉토리를 스캔하여
-    ####_****.jpg 형식의 파일 중 가장 큰 #### 다음 번호 반환
-    """
-    if not os.path.exists(snap_dir):
+def get_next_snapshot_index():
+    if not os.path.exists(SNAP_DIR):
         return 1
 
     max_idx = 0
-    for fname in os.listdir(snap_dir):
-        if not fname.lower().endswith(".jpg"):
+    for f in os.listdir(SNAP_DIR):
+        if not f.endswith(".jpg"):
             continue
-
         try:
-            idx = int(fname.split("_")[0])
-            max_idx = max(max_idx, idx)
+            max_idx = max(max_idx, int(f.split("_")[0]))
         except Exception:
-            continue
+            pass
 
     return max_idx + 1
 
 
+def save_snapshot(order: int, target_ul: int):
+    fname = f"{order:04d}_{target_ul:04d}.jpg"
+    dst = os.path.join(SNAP_DIR, fname)
+
+    img = cv2.imread(OUTPUT_PATH)
+    if img is None:
+        raise RuntimeError("snapshot source missing")
+
+    if ROTATE == 1:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    elif ROTATE == 2:
+        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif ROTATE == 3:
+        img = cv2.rotate(img, cv2.ROTATE_180)
+
+    cv2.imwrite(dst, img)
+    print(f"[SNAPSHOT] saved → {dst}")
+
+
 # ==========================================================
-# Batch random test
+# OCR
 # ==========================================================
-def batch_random_test(
-    batch_count: int = BATCH_COUNT,
-    target_min: int = TARGET_MIN,
-    target_max: int = TARGET_MAX,
-):
-    ensure_dirs()
+def read_ocr():
+    cmd = [
+        sys.executable, "-m", "worker.worker",
+        "--ocr",
+        "--camera=0",
+        f"--rotate={ROTATE}",
+    ]
 
-    start_idx = get_next_snapshot_index(SNAP_DIR)
-    print(f"[BATCH] start index = {start_idx:04d}")
-    print(f"[BATCH] total runs  = {batch_count}")
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
-    success_count = 0
-    fail_count = 0
+    stdout, _ = p.communicate(timeout=OCR_TIMEOUT)
 
-    for offset in range(batch_count):
-        idx = start_idx + offset
-
-        # 🔥 핵심 수정: 마지막 자릿수는 0 또는 5
-        target_ul = random.randrange(target_min, target_max + 1, 5)
-
-        print("\n" + "=" * 60)
-        print(f"[BATCH {idx:04d}] Target = {target_ul} uL")
-
+    for line in stdout.splitlines():
         try:
-            result = single_target_test(
-                target_ul=target_ul,
-                camera_index=0,
-                rotate=1,
-            )
+            msg = json.loads(line)
+        except Exception:
+            continue
 
-            if result.get("success"):
-                success_count += 1
-                final_ul = result["final_ul"]
+        if msg.get("ok"):
+            return int(msg["volume"])
 
-                save_snapshot(
-                    order=idx,
-                    value_ul=target_ul,   # 파일명은 목표 분주량
-                )
+    raise RuntimeError("OCR failed")
 
-                print(
-                    f"[BATCH {idx:04d}] ✅ SUCCESS "
-                    f"(final={final_ul}, target={target_ul})"
-                )
+
+def move_motor(direction, duty, duration_ms):
+    dc = ensure_volume_dc()
+    dc.run(direction=direction, duty=duty)
+    time.sleep(duration_ms / 1000.0)
+    dc.stop()
+
+
+def read_ocr_sane(last_volume):
+    cur = read_ocr()
+
+    def out_of_range(v):
+        return v < VALID_MIN_UL or v > VALID_MAX_UL
+
+    def jump(a, b):
+        return abs(a - b) >= JUMP_THRESHOLD_UL
+
+    if not out_of_range(cur):
+        if last_volume is None or not jump(cur, last_volume):
+            return cur
+
+    for _ in range(MAX_OCR_RETRY):
+        move_motor(NUDGE_DIRECTION, NUDGE_DUTY, NUDGE_DURATION_MS)
+        time.sleep(NUDGE_SETTLE_SEC)
+
+        new = read_ocr()
+        if not out_of_range(new):
+            if last_volume is None or not jump(new, last_volume):
+                return new
+        cur = new
+
+    return last_volume if last_volume is not None else cur
+
+
+# ==========================================================
+# Batch main
+# ==========================================================
+def batch_random_test():
+    ensure_dirs()
+    idx = get_next_snapshot_index()
+
+    for n in range(BATCH_COUNT):
+        target = random.randrange(TARGET_MIN, TARGET_MAX + 1, 5)
+        print(f"\n[BATCH {idx:04d}] target={target}")
+
+        last_volume = None
+
+        for step in range(MAX_ITER):
+            cur = read_ocr_sane(last_volume)
+            last_volume = cur
+            err = target - cur
+
+            print(f"  step={step} cur={cur} err={err}")
+
+            if abs(err) <= VOLUME_TOLERANCE:
+                print("  ✅ reached")
+                save_snapshot(idx, target)
+                break
+
+            direction = 0 if err < 0 else 1
+            abs_err = abs(err)
+
+            if abs_err >= 300:
+                duty, dur = 60, 300
+            elif abs_err >= 100:
+                duty, dur = 45, 250
+            elif abs_err >= 30:
+                duty, dur = 35, 200
             else:
-                fail_count += 1
-                print(
-                    f"[BATCH {idx:04d}] ❌ FAIL "
-                    f"(reason={result.get('reason')})"
-                )
+                duty, dur = 25, 150
 
-        except Exception as e:
-            fail_count += 1
-            print(f"[BATCH {idx:04d}] ❌ EXCEPTION: {e}")
+            move_motor(direction, duty, dur)
+            time.sleep(SETTLE_TIME)
 
-        # --------------------------------------------------
-        # 각 실험 사이 딜레이
-        # --------------------------------------------------
+        idx += 1
         time.sleep(INTER_RUN_DELAY_SEC)
 
-    print("\n" + "=" * 60)
-    print("[BATCH DONE]")
-    print(f"  Success : {success_count}")
-    print(f"  Fail    : {fail_count}")
-    print(f"  Total   : {success_count + fail_count}")
 
-
-# ==========================================================
-# Entry
-# ==========================================================
 if __name__ == "__main__":
     batch_random_test()
