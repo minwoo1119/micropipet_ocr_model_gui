@@ -20,6 +20,14 @@ SETTLE_TIME = 0.7      # sec
 MAX_ITER = 60
 OCR_TIMEOUT = 20       # sec
 
+# ---------- OCR sanity check ----------
+JUMP_THRESHOLD_UL = 200     # 이전 값 대비 급변 허용 한계
+MAX_OCR_RETRY = 2           # nudge 후 재시도 횟수
+NUDGE_DUTY = 18             # 아주 약한 duty
+NUDGE_DURATION_MS = 70
+NUDGE_DIRECTION = 1         # 환경에 맞게 0/1 조정
+NUDGE_SETTLE_SEC = 0.15
+
 # ==========================================================
 # Global actuator (GUI와 동일 경로)
 # ==========================================================
@@ -32,30 +40,22 @@ def ensure_dirs():
 
 
 def ensure_volume_dc():
-    """
-    GUI PipettePanel과 동일한 DC 회전 모터 경로
-    """
     global _serial, _volume_dc
 
     if _serial is None:
         _serial = SerialController()
-
         _serial.connect()
 
     if _volume_dc is None:
         _volume_dc = VolumeDCActuator(
             serial=_serial,
-            actuator_id=0x0C,   # GUI와 동일
+            actuator_id=0x0C,
         )
 
     return _volume_dc
 
 
 def save_snapshot(order: int, value_ul: int):
-    """
-    latest_frame.jpg는 이미 OCR 기준 회전 이미지
-    그대로 복사만 한다
-    """
     fname = f"{order:04d}_{value_ul/1000:.3f}.jpg"
     dst = os.path.join(SNAP_DIR, fname)
     shutil.copy(OUTPUT_PATH, dst)
@@ -104,12 +104,6 @@ def read_ocr_volume(camera_index=0, rotate=1) -> int:
 # Motor control (GUI PipettePanel과 동일)
 # ==========================================================
 def move_motor(direction: int, duty: int, duration_ms: int):
-    """
-    GUI PipettePanel._rotary_start()와 동일한 동작
-    - run(direction, duty)
-    - duration 유지
-    - stop()
-    """
     volume_dc = ensure_volume_dc()
 
     print(
@@ -120,6 +114,52 @@ def move_motor(direction: int, duty: int, duration_ms: int):
     volume_dc.run(direction=direction, duty=duty)
     time.sleep(duration_ms / 1000.0)
     volume_dc.stop()
+
+
+# ==========================================================
+# OCR sanity wrapper (🔥 핵심 추가)
+# ==========================================================
+def read_ocr_volume_sane(
+    last_volume: int | None,
+    camera_index=0,
+    rotate=1,
+) -> int:
+    cur = read_ocr_volume(camera_index=camera_index, rotate=rotate)
+
+    if last_volume is None:
+        return cur
+
+    def is_jump(a, b):
+        return abs(a - b) >= JUMP_THRESHOLD_UL
+
+    if not is_jump(cur, last_volume):
+        return cur
+
+    print(
+        f"[OCR-WARN] jump detected: prev={last_volume} now={cur} "
+        f"(>= {JUMP_THRESHOLD_UL})"
+    )
+
+    for retry in range(MAX_OCR_RETRY):
+        print(f"[OCR-NUDGE] retry {retry+1}")
+
+        move_motor(
+            direction=NUDGE_DIRECTION,
+            duty=NUDGE_DUTY,
+            duration_ms=NUDGE_DURATION_MS,
+        )
+        time.sleep(NUDGE_SETTLE_SEC)
+
+        new_cur = read_ocr_volume(camera_index=camera_index, rotate=rotate)
+        print(f"[OCR-RETRY] value={new_cur}")
+
+        if not is_jump(new_cur, last_volume):
+            return new_cur
+
+        cur = new_cur
+
+    print("[OCR-WARN] unstable OCR → using last_volume for safety")
+    return last_volume
 
 
 # ==========================================================
@@ -137,9 +177,10 @@ def single_target_test(
 
     for step in range(MAX_ITER):
         # --------------------------------------------------
-        # 1. OCR
+        # 1. OCR (sanity-aware)
         # --------------------------------------------------
-        cur = read_ocr_volume(
+        cur = read_ocr_volume_sane(
+            last_volume=last_volume,
             camera_index=camera_index,
             rotate=rotate,
         )
@@ -165,7 +206,7 @@ def single_target_test(
             }
 
         # --------------------------------------------------
-        # 3. 제어 로직 (기존 run_to_target 동일)
+        # 3. 제어 로직
         # --------------------------------------------------
         direction = 0 if err < 0 else 1
         abs_err = abs(err)
