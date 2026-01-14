@@ -167,7 +167,7 @@ def single_target_test(
         # --------------------------------------------------
         # 3. 제어 로직 (기존 run_to_target 동일)
         # --------------------------------------------------
-        direction = 1 if err < 0 else 0
+        direction = 0 if err < 0 else 1
         abs_err = abs(err)
 
         if abs_err >= 300:
