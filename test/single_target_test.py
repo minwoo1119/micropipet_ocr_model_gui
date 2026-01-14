@@ -55,11 +55,34 @@ def ensure_volume_dc():
     return _volume_dc
 
 
-def save_snapshot(order: int, value_ul: int):
-    fname = f"{order:04d}_{value_ul/1000:.3f}.jpg"
+import cv2
+
+def save_snapshot(order: int, value_ul: int, rotate: int = 1):
+    """
+    snapshot 저장 시 회전 보장
+    rotate:
+      0: no rotate
+      1: 90 CW
+      2: 90 CCW
+      3: 180
+    """
+    fname = f"{order:04d}_{value_ul:04d}.jpg"
     dst = os.path.join(SNAP_DIR, fname)
-    shutil.copy(OUTPUT_PATH, dst)
-    print(f"[TEST] snapshot saved: {dst}")
+
+    img = cv2.imread(OUTPUT_PATH)
+    if img is None:
+        raise RuntimeError(f"Failed to load snapshot source: {OUTPUT_PATH}")
+
+    if rotate == 1:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    elif rotate == 2:
+        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif rotate == 3:
+        img = cv2.rotate(img, cv2.ROTATE_180)
+
+    cv2.imwrite(dst, img)
+    print(f"[TEST] snapshot saved (rotated): {dst}")
+
 
 
 # ==========================================================
@@ -119,6 +142,9 @@ def move_motor(direction: int, duty: int, duration_ms: int):
 # ==========================================================
 # OCR sanity wrapper (🔥 핵심 추가)
 # ==========================================================
+VALID_MIN_UL = 500
+VALID_MAX_UL = 5000
+
 def read_ocr_volume_sane(
     last_volume: int | None,
     camera_index=0,
@@ -126,22 +152,34 @@ def read_ocr_volume_sane(
 ) -> int:
     cur = read_ocr_volume(camera_index=camera_index, rotate=rotate)
 
-    if last_volume is None:
-        return cur
+    def is_out_of_range(v):
+        return v < VALID_MIN_UL or v > VALID_MAX_UL
 
     def is_jump(a, b):
         return abs(a - b) >= JUMP_THRESHOLD_UL
 
-    if not is_jump(cur, last_volume):
-        return cur
+    # ===============================
+    # 1️⃣ 절대 범위 체크
+    # ===============================
+    if is_out_of_range(cur):
+        print(
+            f"[OCR-WARN] out-of-range OCR: {cur} "
+            f"(valid {VALID_MIN_UL}~{VALID_MAX_UL})"
+        )
+    else:
+        # 범위는 정상 → jump만 확인
+        if last_volume is None or not is_jump(cur, last_volume):
+            return cur
 
-    print(
-        f"[OCR-WARN] jump detected: prev={last_volume} now={cur} "
-        f"(>= {JUMP_THRESHOLD_UL})"
-    )
+        print(
+            f"[OCR-WARN] jump detected: prev={last_volume} now={cur}"
+        )
 
+    # ===============================
+    # 2️⃣ Nudge + 재시도
+    # ===============================
     for retry in range(MAX_OCR_RETRY):
-        print(f"[OCR-NUDGE] retry {retry+1}")
+        print(f"[OCR-NUDGE] retry {retry + 1}")
 
         move_motor(
             direction=NUDGE_DIRECTION,
@@ -153,13 +191,21 @@ def read_ocr_volume_sane(
         new_cur = read_ocr_volume(camera_index=camera_index, rotate=rotate)
         print(f"[OCR-RETRY] value={new_cur}")
 
-        if not is_jump(new_cur, last_volume):
-            return new_cur
+        if not is_out_of_range(new_cur):
+            if last_volume is None or not is_jump(new_cur, last_volume):
+                return new_cur
 
         cur = new_cur
 
-    print("[OCR-WARN] unstable OCR → using last_volume for safety")
-    return last_volume
+    # ===============================
+    # 3️⃣ 최후 방어
+    # ===============================
+    if last_volume is not None:
+        print("[OCR-WARN] fallback to last_volume")
+        return last_volume
+
+    print("[OCR-WARN] fallback to current OCR despite instability")
+    return cur
 
 
 # ==========================================================

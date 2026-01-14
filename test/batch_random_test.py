@@ -1,54 +1,122 @@
+# test/batch_random_test.py
+import random
 import time
-from worker.control_worker import run_to_target
-from test.test_utils import (
+import os
+
+from .single_target_test import (
+    single_target_test,
+    save_snapshot,
     ensure_dirs,
-    generate_random_target,
-    take_snapshot
 )
-from test.test_logger import init_log, append_log
 
-TOTAL_TEST = 1000
+# ==========================================================
+# Config
+# ==========================================================
+SNAP_DIR = "snapshots"
 
-def main():
+BATCH_COUNT = 1000
+TARGET_MIN = 500
+TARGET_MAX = 5000
+
+INTER_RUN_DELAY_SEC = 1.0   # 각 실험 사이 휴식 (모터/기구 보호)
+
+
+# ==========================================================
+# Snapshot index utility
+# ==========================================================
+def get_next_snapshot_index(snap_dir: str) -> int:
+    """
+    snapshots 디렉토리를 스캔하여
+    ####_****.jpg 형식의 파일 중 가장 큰 #### 다음 번호 반환
+    """
+    if not os.path.exists(snap_dir):
+        return 1
+
+    max_idx = 0
+    for fname in os.listdir(snap_dir):
+        if not fname.lower().endswith(".jpg"):
+            continue
+
+        try:
+            idx = int(fname.split("_")[0])
+            max_idx = max(max_idx, idx)
+        except Exception:
+            continue
+
+    return max_idx + 1
+
+
+# ==========================================================
+# Batch random test
+# ==========================================================
+def batch_random_test(
+    batch_count: int = BATCH_COUNT,
+    target_min: int = TARGET_MIN,
+    target_max: int = TARGET_MAX,
+):
     ensure_dirs()
-    init_log()
 
-    for order in range(1, TOTAL_TEST + 1):
-        target_ul, target_ml = generate_random_target()
+    start_idx = get_next_snapshot_index(SNAP_DIR)
+    print(f"[BATCH] start index = {start_idx:04d}")
+    print(f"[BATCH] total runs  = {batch_count}")
 
-        print(f"\n[{order:04d}] Target = {target_ul} uL")
+    success_count = 0
+    fail_count = 0
 
-        start = time.time()
+    for offset in range(batch_count):
+        idx = start_idx + offset
 
-        result = run_to_target(
-            target_ul=target_ul,
-            tolerance=5,
-            max_loop=120
-        )
+        # 🔥 핵심 수정: 마지막 자릿수는 0 또는 5
+        target_ul = random.randrange(target_min, target_max + 1, 5)
 
-        elapsed = time.time() - start
+        print("\n" + "=" * 60)
+        print(f"[BATCH {idx:04d}] Target = {target_ul} uL")
 
-        final_ul = result.get("final_ul")
-        success = result.get("success", False)
+        try:
+            result = single_target_test(
+                target_ul=target_ul,
+                camera_index=0,
+                rotate=1,
+            )
 
-        # 로그 기록
-        append_log(
-            order=order,
-            target_ul=target_ul,
-            target_ml=target_ml,
-            final_ul=final_ul,
-            success=success,
-            elapsed=elapsed
-        )
+            if result.get("success"):
+                success_count += 1
+                final_ul = result["final_ul"]
 
-        # 성공 시 스냅샷
-        if success:
-            path = take_snapshot(order, target_ml)
-            print(f"[SNAPSHOT] {path}")
-        else:
-            print("[FAIL] Did not reach target")
+                save_snapshot(
+                    order=idx,
+                    value_ul=target_ul,   # 파일명은 목표 분주량
+                )
 
-        time.sleep(0.5)  # 기계 안정화용
+                print(
+                    f"[BATCH {idx:04d}] ✅ SUCCESS "
+                    f"(final={final_ul}, target={target_ul})"
+                )
+            else:
+                fail_count += 1
+                print(
+                    f"[BATCH {idx:04d}] ❌ FAIL "
+                    f"(reason={result.get('reason')})"
+                )
 
+        except Exception as e:
+            fail_count += 1
+            print(f"[BATCH {idx:04d}] ❌ EXCEPTION: {e}")
+
+        # --------------------------------------------------
+        # 각 실험 사이 딜레이
+        # --------------------------------------------------
+        time.sleep(INTER_RUN_DELAY_SEC)
+
+    print("\n" + "=" * 60)
+    print("[BATCH DONE]")
+    print(f"  Success : {success_count}")
+    print(f"  Fail    : {fail_count}")
+    print(f"  Total   : {success_count + fail_count}")
+
+
+# ==========================================================
+# Entry
+# ==========================================================
 if __name__ == "__main__":
-    main()
+    batch_random_test()

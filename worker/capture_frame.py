@@ -6,8 +6,8 @@ from worker.camera import capture_one_frame
 OUTPUT_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",
-    "shared",
-    "latest_frame.jpg"
+    "state",
+    "last_frame.jpg"
 )
 
 def capture_one_frame_to_disk(camera_index=0):
