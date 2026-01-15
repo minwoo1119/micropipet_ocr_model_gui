@@ -171,7 +171,7 @@ def single_target_test(target_ul, camera_index=0, rotate=1):
         elif abs_err >= 50:
             duty, dur = 35, 200
         else:
-            duty, dur = 25, 150
+            duty, dur = 30, 150
 
 
         move_motor(direction, duty, dur)
