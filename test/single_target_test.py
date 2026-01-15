@@ -3,8 +3,8 @@ import subprocess
 import json
 import time
 import os
-import shutil
 import sys
+import cv2
 
 from worker.capture_frame import OUTPUT_PATH
 from worker.serial_controller import SerialController
@@ -15,21 +15,23 @@ from worker.actuator_volume_dc import VolumeDCActuator
 # ==========================================================
 SNAP_DIR = "snapshots"
 
-VOLUME_TOLERANCE = 1   # uL
-SETTLE_TIME = 0.7      # sec
+VOLUME_TOLERANCE = 1
+SETTLE_TIME = 0.9
 MAX_ITER = 60
-OCR_TIMEOUT = 20       # sec
+OCR_TIMEOUT = 20
 
-# ---------- OCR sanity check ----------
-JUMP_THRESHOLD_UL = 200     # 이전 값 대비 급변 허용 한계
-MAX_OCR_RETRY = 2           # nudge 후 재시도 횟수
-NUDGE_DUTY = 18             # 아주 약한 duty
-NUDGE_DURATION_MS = 70
-NUDGE_DIRECTION = 1         # 환경에 맞게 0/1 조정
+VALID_MIN_UL = 500
+VALID_MAX_UL = 5000
+JUMP_THRESHOLD_UL = 200
+MAX_OCR_RETRY = 4
+
+NUDGE_DUTY = 25
+NUDGE_DURATION_MS = 60
+NUDGE_DIRECTION = 1
 NUDGE_SETTLE_SEC = 0.15
 
 # ==========================================================
-# Global actuator (GUI와 동일 경로)
+# Global actuator
 # ==========================================================
 _serial = None
 _volume_dc = None
@@ -41,37 +43,24 @@ def ensure_dirs():
 
 def ensure_volume_dc():
     global _serial, _volume_dc
-
     if _serial is None:
         _serial = SerialController()
         _serial.connect()
-
     if _volume_dc is None:
         _volume_dc = VolumeDCActuator(
             serial=_serial,
             actuator_id=0x0C,
         )
-
     return _volume_dc
 
 
-import cv2
-
 def save_snapshot(order: int, value_ul: int, rotate: int = 1):
-    """
-    snapshot 저장 시 회전 보장
-    rotate:
-      0: no rotate
-      1: 90 CW
-      2: 90 CCW
-      3: 180
-    """
     fname = f"{order:04d}_{value_ul:04d}.jpg"
     dst = os.path.join(SNAP_DIR, fname)
 
     img = cv2.imread(OUTPUT_PATH)
     if img is None:
-        raise RuntimeError(f"Failed to load snapshot source: {OUTPUT_PATH}")
+        raise RuntimeError("snapshot source missing")
 
     if rotate == 1:
         img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
@@ -81,12 +70,11 @@ def save_snapshot(order: int, value_ul: int, rotate: int = 1):
         img = cv2.rotate(img, cv2.ROTATE_180)
 
     cv2.imwrite(dst, img)
-    print(f"[TEST] snapshot saved (rotated): {dst}")
-
+    print(f"[SNAPSHOT] saved → {dst}")
 
 
 # ==========================================================
-# OCR (GUI Read OCR Volume과 동일 경로)
+# OCR (1회용 subprocess)
 # ==========================================================
 def read_ocr_volume(camera_index=0, rotate=1) -> int:
     cmd = [
@@ -104,146 +92,68 @@ def read_ocr_volume(camera_index=0, rotate=1) -> int:
     )
 
     try:
-        stdout, stderr = p.communicate(timeout=OCR_TIMEOUT)
+        stdout, _ = p.communicate(timeout=OCR_TIMEOUT)
     except subprocess.TimeoutExpired:
         p.kill()
-        raise RuntimeError("OCR subprocess timeout")
+        raise RuntimeError("OCR timeout")
 
     for line in stdout.splitlines():
         try:
             msg = json.loads(line)
-        except json.JSONDecodeError:
+            if msg.get("ok"):
+                return int(msg["volume"])
+        except Exception:
             continue
 
-        if msg.get("ok"):
-            return int(msg["volume"])
-
-    raise RuntimeError(
-        f"OCR failed\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-    )
+    raise RuntimeError("OCR failed")
 
 
-# ==========================================================
-# Motor control (GUI PipettePanel과 동일)
-# ==========================================================
 def move_motor(direction: int, duty: int, duration_ms: int):
-    volume_dc = ensure_volume_dc()
-
-    print(
-        f"[MOTOR] run dir={'CW' if direction==1 else 'CCW'} "
-        f"duty={duty} duration={duration_ms}ms"
-    )
-
-    volume_dc.run(direction=direction, duty=duty)
+    dc = ensure_volume_dc()
+    dc.run(direction=direction, duty=duty)
     time.sleep(duration_ms / 1000.0)
-    volume_dc.stop()
+    dc.stop()
 
 
-# ==========================================================
-# OCR sanity wrapper (🔥 핵심 추가)
-# ==========================================================
-VALID_MIN_UL = 500
-VALID_MAX_UL = 5000
+def read_ocr_volume_sane(last_volume, camera_index=0, rotate=1):
+    cur = read_ocr_volume(camera_index, rotate)
 
-def read_ocr_volume_sane(
-    last_volume: int | None,
-    camera_index=0,
-    rotate=1,
-) -> int:
-    cur = read_ocr_volume(camera_index=camera_index, rotate=rotate)
-
-    def is_out_of_range(v):
+    def out_of_range(v):
         return v < VALID_MIN_UL or v > VALID_MAX_UL
 
-    def is_jump(a, b):
+    def jump(a, b):
         return abs(a - b) >= JUMP_THRESHOLD_UL
 
-    # ===============================
-    # 1️⃣ 절대 범위 체크
-    # ===============================
-    if is_out_of_range(cur):
-        print(
-            f"[OCR-WARN] out-of-range OCR: {cur} "
-            f"(valid {VALID_MIN_UL}~{VALID_MAX_UL})"
-        )
-    else:
-        # 범위는 정상 → jump만 확인
-        if last_volume is None or not is_jump(cur, last_volume):
+    if not out_of_range(cur):
+        if last_volume is None or not jump(cur, last_volume):
             return cur
 
-        print(
-            f"[OCR-WARN] jump detected: prev={last_volume} now={cur}"
-        )
+    print(f"[OCR-WARN] unstable OCR: {cur}")
 
-    # ===============================
-    # 2️⃣ Nudge + 재시도
-    # ===============================
-    for retry in range(MAX_OCR_RETRY):
-        print(f"[OCR-NUDGE] retry {retry + 1}")
-
-        move_motor(
-            direction=NUDGE_DIRECTION,
-            duty=NUDGE_DUTY,
-            duration_ms=NUDGE_DURATION_MS,
-        )
+    for _ in range(MAX_OCR_RETRY):
+        move_motor(NUDGE_DIRECTION, NUDGE_DUTY, NUDGE_DURATION_MS)
         time.sleep(NUDGE_SETTLE_SEC)
+        new = read_ocr_volume(camera_index, rotate)
+        if not out_of_range(new):
+            if last_volume is None or not jump(new, last_volume):
+                return new
+        cur = new
 
-        new_cur = read_ocr_volume(camera_index=camera_index, rotate=rotate)
-        print(f"[OCR-RETRY] value={new_cur}")
-
-        if not is_out_of_range(new_cur):
-            if last_volume is None or not is_jump(new_cur, last_volume):
-                return new_cur
-
-        cur = new_cur
-
-    # ===============================
-    # 3️⃣ 최후 방어
-    # ===============================
-    if last_volume is not None:
-        print("[OCR-WARN] fallback to last_volume")
-        return last_volume
-
-    print("[OCR-WARN] fallback to current OCR despite instability")
-    return cur
+    return last_volume if last_volume is not None else cur
 
 
-# ==========================================================
-# Single target test
-# ==========================================================
-def single_target_test(
-    target_ul: int,
-    camera_index: int = 0,
-    rotate: int = 1,
-):
-    print("[TEST] Single target test (worker-only)")
-    print(f"[TEST] Target = {target_ul} uL")
-
+def single_target_test(target_ul, camera_index=0, rotate=1):
+    print(f"[TEST] target={target_ul}")
     last_volume = None
 
     for step in range(MAX_ITER):
-        # --------------------------------------------------
-        # 1. OCR (sanity-aware)
-        # --------------------------------------------------
-        cur = read_ocr_volume_sane(
-            last_volume=last_volume,
-            camera_index=camera_index,
-            rotate=rotate,
-        )
-
+        cur = read_ocr_volume_sane(last_volume, camera_index, rotate)
         last_volume = cur
         err = target_ul - cur
 
-        print(
-            f"[STEP {step}] "
-            f"cur={cur} target={target_ul} err={err}"
-        )
+        print(f"[STEP {step}] cur={cur} err={err}")
 
-        # --------------------------------------------------
-        # 2. 종료 조건
-        # --------------------------------------------------
         if abs(err) <= VOLUME_TOLERANCE:
-            print("[DONE] Target reached")
             return {
                 "success": True,
                 "final_ul": cur,
@@ -251,70 +161,25 @@ def single_target_test(
                 "steps": step + 1,
             }
 
-        # --------------------------------------------------
-        # 3. 제어 로직
-        # --------------------------------------------------
         direction = 0 if err < 0 else 1
         abs_err = abs(err)
 
         if abs_err >= 300:
-            duty = 60
-            duration_ms = 300
-        elif abs_err >= 100:
-            duty = 45
-            duration_ms = 250
-        elif abs_err >= 30:
-            duty = 35
-            duration_ms = 200
+            duty, dur = 55, 280
+        elif abs_err >= 150:
+            duty, dur = 45, 240
+        elif abs_err >= 50:
+            duty, dur = 35, 200
         else:
-            duty = 25
-            duration_ms = 150
+            duty, dur = 25, 150
 
-        # --------------------------------------------------
-        # 4. Motor
-        # --------------------------------------------------
-        move_motor(
-            direction=direction,
-            duty=duty,
-            duration_ms=duration_ms,
-        )
 
-        # --------------------------------------------------
-        # 5. settle
-        # --------------------------------------------------
+        move_motor(direction, duty, dur)
         time.sleep(SETTLE_TIME)
 
-    print("[WARN] max_iter reached")
     return {
         "success": False,
         "final_ul": last_volume,
         "target_ul": target_ul,
         "reason": "max_iter",
     }
-
-
-# ==========================================================
-# Entry
-# ==========================================================
-def main():
-    ensure_dirs()
-
-    target_ul = 1200
-
-    result = single_target_test(
-        target_ul=target_ul,
-        camera_index=0,
-        rotate=1,
-    )
-
-    print("\n========== RESULT ==========")
-    print(result)
-
-    if result.get("success"):
-        save_snapshot(order=1, value_ul=result["final_ul"])
-    else:
-        print("❌ Failed to reach target")
-
-
-if __name__ == "__main__":
-    main()
