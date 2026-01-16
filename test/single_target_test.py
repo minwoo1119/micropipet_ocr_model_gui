@@ -14,6 +14,7 @@ from worker.actuator_volume_dc import VolumeDCActuator
 # Config
 # ==========================================================
 SNAP_DIR = "snapshots"
+CALIB_JSON_PATH = "calibration.json"
 
 VOLUME_TOLERANCE = 1
 SETTLE_TIME = 0.9
@@ -22,13 +23,10 @@ OCR_TIMEOUT = 20
 
 VALID_MIN_UL = 500
 VALID_MAX_UL = 5000
-JUMP_THRESHOLD_UL = 200
-MAX_OCR_RETRY = 4
+BOUND_MARGIN = 5   # 500 / 5000 보호
 
-NUDGE_DUTY = 25
-NUDGE_DURATION_MS = 60
-NUDGE_DIRECTION = 1
-NUDGE_SETTLE_SEC = 0.15
+CALIB_TOL = 5
+CALIB_MAX_TRY = 6
 
 # ==========================================================
 # Global actuator
@@ -54,27 +52,8 @@ def ensure_volume_dc():
     return _volume_dc
 
 
-def save_snapshot(order: int, value_ul: int, rotate: int = 1):
-    fname = f"{order:04d}_{value_ul:04d}.jpg"
-    dst = os.path.join(SNAP_DIR, fname)
-
-    img = cv2.imread(OUTPUT_PATH)
-    if img is None:
-        raise RuntimeError("snapshot source missing")
-
-    if rotate == 1:
-        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-    elif rotate == 2:
-        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif rotate == 3:
-        img = cv2.rotate(img, cv2.ROTATE_180)
-
-    cv2.imwrite(dst, img)
-    print(f"[SNAPSHOT] saved → {dst}")
-
-
 # ==========================================================
-# OCR (1회용 subprocess)
+# OCR
 # ==========================================================
 def read_ocr_volume(camera_index=0, rotate=1) -> int:
     cmd = [
@@ -91,11 +70,7 @@ def read_ocr_volume(camera_index=0, rotate=1) -> int:
         text=True,
     )
 
-    try:
-        stdout, _ = p.communicate(timeout=OCR_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        raise RuntimeError("OCR timeout")
+    stdout, _ = p.communicate(timeout=OCR_TIMEOUT)
 
     for line in stdout.splitlines():
         try:
@@ -115,40 +90,107 @@ def move_motor(direction: int, duty: int, duration_ms: int):
     dc.stop()
 
 
-def read_ocr_volume_sane(last_volume, camera_index=0, rotate=1):
-    cur = read_ocr_volume(camera_index, rotate)
-
-    def out_of_range(v):
-        return v < VALID_MIN_UL or v > VALID_MAX_UL
-
-    def jump(a, b):
-        return abs(a - b) >= JUMP_THRESHOLD_UL
-
-    if not out_of_range(cur):
-        if last_volume is None or not jump(cur, last_volume):
-            return cur
-
-    print(f"[OCR-WARN] unstable OCR: {cur}")
-
-    for _ in range(MAX_OCR_RETRY):
-        move_motor(NUDGE_DIRECTION, NUDGE_DUTY, NUDGE_DURATION_MS)
-        time.sleep(NUDGE_SETTLE_SEC)
-        new = read_ocr_volume(camera_index, rotate)
-        if not out_of_range(new):
-            if last_volume is None or not jump(new, last_volume):
-                return new
-        cur = new
-
-    return last_volume if last_volume is not None else cur
+# ==========================================================
+# Calibration JSON utils
+# ==========================================================
+def save_calibration(calib: dict):
+    to_save = {str(k): v for k, v in calib.items()}
+    with open(CALIB_JSON_PATH, "w") as f:
+        json.dump(to_save, f, indent=2)
+    print(f"[CALIB] saved → {CALIB_JSON_PATH}")
 
 
-def single_target_test(target_ul, camera_index=0, rotate=1):
+def load_calibration():
+    if not os.path.exists(CALIB_JSON_PATH):
+        return None
+
+    with open(CALIB_JSON_PATH, "r") as f:
+        raw = json.load(f)
+
+    calib = {int(k): v for k, v in raw.items()}
+    print(f"[CALIB] loaded ← {CALIB_JSON_PATH}")
+    return calib
+
+
+# ==========================================================
+# 🔥 Calibration core
+# ==========================================================
+def calibrate_one_target(
+    target_ul: int,
+    base_duty: int,
+    base_dur: int,
+    camera_index: int,
+    rotate: int,
+):
+    print(f"[CALIB] target={target_ul}uL")
+
+    duty = base_duty
+    dur = base_dur
+
+    for i in range(CALIB_MAX_TRY):
+        before = read_ocr_volume(camera_index, rotate)
+        move_motor(1, duty, dur)
+        time.sleep(SETTLE_TIME)
+        after = read_ocr_volume(camera_index, rotate)
+
+        delta = abs(after - before)
+
+        print(
+            f"[CALIB] try={i+1} "
+            f"duty={duty} dur={dur}ms delta={delta}"
+        )
+
+        if abs(delta - target_ul) <= CALIB_TOL:
+            print("[CALIB] ✅ accepted")
+            return {
+                "duty": duty,
+                "duration_ms": dur,
+                "delta_ul": delta,
+            }
+
+        if delta < target_ul:
+            dur += 80
+        else:
+            dur -= 60
+
+        dur = max(80, min(1500, dur))
+
+    raise RuntimeError(f"[CALIB] failed for {target_ul}uL")
+
+
+def run_calibration(camera_index=0, rotate=1):
+    print("=" * 40)
+    print("[CALIB] start calibration (one-time)")
+    print("=" * 40)
+
+    calib = {}
+
+    calib[100] = calibrate_one_target(100, 55, 900, camera_index, rotate)
+    calib[50]  = calibrate_one_target(50,  40, 500, camera_index, rotate)
+    calib[10]  = calibrate_one_target(10,  30, 150, camera_index, rotate)
+    calib[5]   = calibrate_one_target(5,   25, 80,  camera_index, rotate)
+
+    print("[CALIB] DONE")
+    for k, v in calib.items():
+        print(f"  {k}uL → {v}")
+
+    save_calibration(calib)
+    return calib
+
+
+# ==========================================================
+# 🎯 Single target control
+# ==========================================================
+def single_target_test(
+    target_ul: int,
+    calib: dict,
+    camera_index: int = 0,
+    rotate: int = 1,
+):
     print(f"[TEST] target={target_ul}")
-    last_volume = None
 
     for step in range(MAX_ITER):
-        cur = read_ocr_volume_sane(last_volume, camera_index, rotate)
-        last_volume = cur
+        cur = read_ocr_volume(camera_index, rotate)
         err = target_ul - cur
 
         print(f"[STEP {step}] cur={cur} err={err}")
@@ -161,25 +203,32 @@ def single_target_test(target_ul, camera_index=0, rotate=1):
                 "steps": step + 1,
             }
 
-        direction = 0 if err < 0 else 1
+        # 🔒 HARD BOUND
+        if cur <= VALID_MIN_UL + BOUND_MARGIN and err < 0:
+            print("[BOUND] lower limit reached")
+            break
+        if cur >= VALID_MAX_UL - BOUND_MARGIN and err > 0:
+            print("[BOUND] upper limit reached")
+            break
+
         abs_err = abs(err)
+        direction = 0 if err < 0 else 1
 
-        if abs_err >= 300:
-            duty, dur = 55, 280
-        elif abs_err >= 150:
-            duty, dur = 45, 240
-        elif abs_err >= 50:
-            duty, dur = 35, 200
+        if abs_err >= 75:
+            cfg = calib[100]
+        elif abs_err >= 30:
+            cfg = calib[50]
+        elif abs_err >= 12:
+            cfg = calib[10]
         else:
-            duty, dur = 30, 150
+            cfg = calib[5]
 
-
-        move_motor(direction, duty, dur)
+        move_motor(direction, cfg["duty"], cfg["duration_ms"])
         time.sleep(SETTLE_TIME)
 
     return {
         "success": False,
-        "final_ul": last_volume,
+        "final_ul": cur,
         "target_ul": target_ul,
-        "reason": "max_iter",
+        "reason": "max_iter_or_bound",
     }
