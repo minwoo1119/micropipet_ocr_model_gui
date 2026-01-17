@@ -1,4 +1,3 @@
-# test/single_target_test.py
 import subprocess
 import json
 import time
@@ -23,7 +22,7 @@ OCR_TIMEOUT = 20
 
 VALID_MIN_UL = 500
 VALID_MAX_UL = 5000
-BOUND_MARGIN = 5   # 500 / 5000 보호
+BOUND_MARGIN = 5 
 
 CALIB_TOL = 5
 CALIB_MAX_TRY = 6
@@ -113,7 +112,7 @@ def load_calibration():
 
 
 # ==========================================================
-# 🔥 Calibration core
+# Calibration core
 # ==========================================================
 def calibrate_one_target(
     target_ul: int,
@@ -141,7 +140,7 @@ def calibrate_one_target(
         )
 
         if abs(delta - target_ul) <= CALIB_TOL:
-            print("[CALIB] ✅ accepted")
+            print("[CALIB] accepted")
             return {
                 "duty": duty,
                 "duration_ms": dur,
@@ -179,7 +178,7 @@ def run_calibration(camera_index=0, rotate=1):
 
 
 # ==========================================================
-# 🎯 Single target control
+# Single target control
 # ==========================================================
 def single_target_test(
     target_ul: int,
@@ -203,7 +202,7 @@ def single_target_test(
                 "steps": step + 1,
             }
 
-        # 🔒 HARD BOUND
+        # HARD BOUND
         if cur <= VALID_MIN_UL + BOUND_MARGIN and err < 0:
             print("[BOUND] lower limit reached")
             break
@@ -214,9 +213,9 @@ def single_target_test(
         abs_err = abs(err)
         direction = 0 if err < 0 else 1
 
-        if abs_err >= 75:
+        if abs_err >= 110:
             cfg = calib[100]
-        elif abs_err >= 30:
+        elif abs_err >= 60:
             cfg = calib[50]
         elif abs_err >= 12:
             cfg = calib[10]

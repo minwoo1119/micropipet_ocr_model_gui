@@ -1,4 +1,3 @@
-# test/batch_random_test.py
 import time
 import random
 import os
@@ -17,7 +16,7 @@ from worker.capture_frame import OUTPUT_PATH
 # ==========================================================
 SNAP_DIR = "snapshots"
 
-BATCH_COUNT = 1000
+BATCH_COUNT = 200
 TARGET_MIN = 1000
 TARGET_MAX = 4500
 TARGET_STEP = 5
@@ -34,6 +33,7 @@ SETTLE_TIME = 0.9
 def get_next_snapshot_index():
     if not os.path.exists(SNAP_DIR):
         return 1
+
     max_idx = 0
     for f in os.listdir(SNAP_DIR):
         if f.endswith(".jpg"):
@@ -51,8 +51,8 @@ def save_snapshot(order: int, value_ul: int, rotate: int):
 
     img = cv2.imread(OUTPUT_PATH)
     if img is None:
-        print("[SNAPSHOT] ❌ frame missing")
-        return
+        print("[SNAPSHOT] frame missing")
+        return False
 
     if rotate == 1:
         img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
@@ -63,6 +63,7 @@ def save_snapshot(order: int, value_ul: int, rotate: int):
 
     cv2.imwrite(dst, img)
     print(f"[SNAPSHOT] saved → {dst}")
+    return True
 
 
 # ==========================================================
@@ -76,19 +77,28 @@ def batch_random_test():
     print("[BATCH] start random batch test")
     print("====================================")
 
-    # 🔥 calibration: load or run
     calib = load_calibration()
     if calib is None:
         calib = run_calibration(CAMERA_INDEX, ROTATE)
 
-    for run in range(BATCH_COUNT):
+    success_count = 0
+    trial_count = 0
+
+    while success_count < BATCH_COUNT:
+        trial_count += 1
+
         target = random.randrange(
             TARGET_MIN,
             TARGET_MAX + 1,
             TARGET_STEP,
         )
 
-        print(f"\n[BATCH {idx:04d}] run={run+1}/{BATCH_COUNT} target={target}")
+        print(
+            f"\n[BATCH {idx:04d}] "
+            f"success={success_count+1}/{BATCH_COUNT} "
+            f"trial={trial_count} "
+            f"target={target}"
+        )
 
         result = single_target_test(
             target_ul=target,
@@ -99,22 +109,24 @@ def batch_random_test():
 
         if result.get("success"):
             final_ul = result["final_ul"]
-            print(f"[BATCH {idx:04d}] ✅ success final={final_ul}")
+            print(f"[BATCH {idx:04d}] success final={final_ul}")
 
-            # 🔥 프레임 안정화
+            # 프레임 안정화
             time.sleep(SETTLE_TIME)
 
-            save_snapshot(idx, final_ul, ROTATE)
-            idx += 1
+            if save_snapshot(idx, final_ul, ROTATE):
+                idx += 1
+                success_count += 1
         else:
             print(
-                f"[BATCH {idx:04d}] ❌ failed "
+                f"[BATCH {idx:04d}] failed "
                 f"reason={result.get('reason')}"
             )
 
         time.sleep(INTER_RUN_DELAY_SEC)
 
     print("\n[BATCH] finished")
+    print(f"성공 이미지 : {success_count}")
 
 
 if __name__ == "__main__":
